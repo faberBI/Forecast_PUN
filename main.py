@@ -364,7 +364,7 @@ def pipeline_run():
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
     df_final.set_index("Datetime", inplace=True)
 
-    st.dataframe(df_final)
+    st.dataframe(df_final.tail(50))
 
     log(f"Shape finale: {df_final.shape}")
     log(f"Ultima data finale: {df_final.index.max()}")
