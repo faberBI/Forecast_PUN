@@ -84,14 +84,17 @@ class PUNFeatureEngineering:
 
         df = df.reset_index()
 
-        df.rename(
-            columns={"Date": "Data"},
-            inplace=True
-        )
 
-        df["Data"] = pd.to_datetime(
-            df["Data"]
-        ).dt.normalize()
+        # ✅ FIX UNIVERSALE
+        if "Date" in df.columns:
+            df = df.rename(columns={"Date": "Data"})
+        elif "index" in df.columns:
+            df = df.rename(columns={"index": "Data"})
+        else:
+            df = df.rename(columns={df.columns[0]: "Data"})
+
+        df["Data"] = pd.to_datetime(df["Data"]).dt.normalize()
+
 
         return df
 
