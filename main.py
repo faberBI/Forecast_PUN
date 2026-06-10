@@ -5,7 +5,8 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
+                   
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient)
 
 import yaml
@@ -26,7 +27,6 @@ FEATURES_NEW = config["features"]["FEATURES_NEW"]
 # =========================================================
 # CONFIG UI
 # =========================================================
-st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
 st.title("⚡ PUN Dataset Manager")
 st.caption("Aggiornamento dataset intraday PUN / Meteo / Terna")
 
