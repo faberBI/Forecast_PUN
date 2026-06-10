@@ -1,0 +1,15 @@
+streamlit
+pandas
+numpy
+pyarrow
+
+joblib
+gdown
+PyYAML
+
+lightgbm
+scikit-learn
+skforecast
+
+openpyxl
+requests
