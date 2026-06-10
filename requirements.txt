@@ -24,5 +24,4 @@ openmeteo-requests==1.7.5
 openmeteo-sdk==1.26.0
 catboost
 plotly
-supabase
 dropbox
