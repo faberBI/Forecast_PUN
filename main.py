@@ -9,10 +9,11 @@ from scipy.stats import ks_2samp
 import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, df_to_supabase_records, load_dataset_history_from_supabase)
+from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 
 import yaml
+import dropbox
 
 CONFIG_PATH = "config/config.yaml"
 
@@ -26,15 +27,6 @@ config = load_config()
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
 SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
-
-
-from supabase import create_client
-
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-
-supabase = create_client(url, key)
-
 
 # =========================================================
 # CONFIG UI
@@ -368,14 +360,12 @@ def pipeline_run():
     # =========================================================
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
-    # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
+    upload_to_dropbox(
+    OUTPUT_PATH,
+    "/forecast_pun/dataset_history.parquet"
+    )
 
-    df_to_db = df_final.reset_index().copy()
-    st.dataframe(df_final.tail(50))
-    st.dataframe(df_to_db.tail(50))
-    records = df_to_supabase_records(df_to_db)
-    supabase.table("dataset_history").upsert(records).execute()
-    log("✅ Dataset salvato su Supabase")
+    # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
     return df_final, log_lines
 
 
@@ -505,23 +495,16 @@ if df_historical is not None:
     st.dataframe(df_historical.tail(50), use_container_width=True)
 
 
-st.subheader("📦 Preview DB aggiornato (Supabase)")
 
-response = supabase.table("dataset_history") \
-    .select("*") \
-    .order("Datetime", desc=True) \
-    .limit(50) \
-    .execute()
+st.subheader("📦 Preview DB aggiornato")
 
-df_output = pd.DataFrame(response.data)
+df_output = load_output_if_exists(OUTPUT_PATH)
 
-if not df_output.empty:
-    # conversione datetime per sicurezza
-    df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
-
-    st.dataframe(df_output, use_container_width=True)
+if df_output is not None:
+    st.dataframe(df_output.tail(50), use_container_width=True)
 else:
-    st.warning("⚠️ Nessun dato presente sul db SQL")
+    st.warning("⚠️ Nessun dato presente nel file parquet")
+
 
 
 from pathlib import Path
@@ -607,18 +590,18 @@ st.write(f'Varibaili esogene aggiornate✅')
 
 
 
-df_hist = load_dataset_history_from_supabase()
 
-if df_hist.empty:
-    st.error("❌ Dataset vuoto in Supabase → prima esegui aggiornamento")
-    st.stop()
+df_hist = pd.read_parquet(OUTPUT_PATH)
 
-df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
-df_hist = df_hist.set_index("Datetime").sort_index()
+if not isinstance(df_hist.index, pd.DatetimeIndex):
+    df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
+    df_hist = df_hist.set_index("Datetime")
+
+df_hist = df_hist.sort_index()
 df_hist = df_hist.asfreq("15min").ffill()
 
-run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
+run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 FORECAST_PATH = "dati_output/forecast_history.parquet"
 
 if run_forecast:
@@ -633,32 +616,38 @@ if run_forecast:
     )
 
     st.success("✅ Forecast completato")
-
+    
     # ==========================================
-    # SAVE FORECAST (gestione file non esistente)
+    # SAVE FORECAST (parquet)
     # ==========================================
+    
     preds_to_save = preds.copy()
     preds_to_save["created_at"] = pd.Timestamp.now()
-
+    
+    # se esiste storico -> append
     if os.path.exists(FORECAST_PATH):
         df_old = pd.read_parquet(FORECAST_PATH)
-        df_all = pd.concat([df_old, preds_to_save])
-        df_all = df_all.drop_duplicates(subset=["Datetime"])
+        df_all = pd.concat([df_old, preds_to_save], ignore_index=True)
     else:
-        df_all = preds_to_save
+        df_all = preds_to_save.copy()
         st.info("📦 Primo forecast salvato (inizializzazione storico)")
-
+    
+    # rimuovi eventuali doppioni
+    df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
+    
+    # ordina bene
     df_all = df_all.sort_values("Datetime")
-
+    
+    # salva
     df_all.to_parquet(FORECAST_PATH)
-    preds_to_db = preds_to_save.copy()
-    records = df_to_supabase_records(preds_to_db)
-    supabase.table("forecast_history").upsert(records).execute()
+    upload_to_dropbox(
+    FORECAST_PATH,
+    "/forecast_pun/forecast_history.parquet")
+    st.success("✅ Salvato su Dropbox")
 
-
-
-    st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
-
+    # log UI
+    st.success(f"✅ Salvati {len(preds_to_save)} nuovi forecast")
+    st.write(f"📊 Totale forecast storico: {len(df_all)}")
     # UI
     fig, stats = plot_forecast_pun(preds)
     st.subheader("📈 Forecast intraday PUN")
@@ -737,25 +726,21 @@ if uploaded_file is not None:
             # ==============================================
             df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
             df_eval["abs_error"] = df_eval["error"].abs()
-            # ==============================================
+            # ==============================================#
             # 6. SAVE ERROR HISTORY
-            # ==============================================
+            # ==============================================#
+
             if os.path.exists(ERROR_PATH):
-                df_old = pd.read_parquet(ERROR_PATH)
-                df_all = pd.concat([df_old, df_eval])
-                df_all = df_all.drop_duplicates(subset=["Datetime"])
+              df_old = pd.read_parquet(ERROR_PATH)
+              df_all = pd.concat([df_old, df_eval], ignore_index=True)
             else:
-                df_all = df_eval
+              df_all = df_eval.copy()
+            df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
             df_all = df_all.sort_values("Datetime")
             df_all.to_parquet(ERROR_PATH)
-            if "Datetime" not in df_all.columns:
-              df_err_db = df_all.reset_index()
-            else:
-              df_err_db = df_all.copy()
-            records = df_to_supabase_records(df_err_db)
-            supabase.table("error_history").upsert(records).execute()
-
+            upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet")  
             st.success("✅ Error history aggiornato")
+
             # ==============================================
             # 7. METRICHE
             # ==============================================
