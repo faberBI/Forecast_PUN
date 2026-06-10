@@ -441,8 +441,8 @@ FILE_ID = st.secrets.get("MODEL_PRODUCTION", os.getenv("MODEL_PRODUCTION", ""))
 def load_model_bundle():
 
     if not MODEL_PATH.exists():
-
-        st.info("📥 Download modello aggiornato...")
+        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
+        st.info(f"📥 Download modello aggiornato al{today_minus_1}...")
 
         gdown.download(
             f"https://drive.google.com/uc?id={FILE_ID}",
