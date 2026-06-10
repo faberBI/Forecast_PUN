@@ -354,12 +354,11 @@ def pipeline_run():
     df_new = df[FEATURES_NEW].copy()
 
     # elimina da df_old tutto ciò che è già presente in df_new per Datetime
-    df_old = df_old[~df_old.index.isin(df_new["Datetime"])]
-
-    st.dataframe(df_old)
-    st.dataframe(df_new)
-  
+    df_old = df_old[~df_old.index.isin(df_new["Datetime"])]  
     df_old.reset_index(inplace=True)
+
+    st.dataframe(df_old.tail(50))
+    st.dataframe(df_new.tail(50))
 
     df_final = pd.concat([df_old, df_new], ignore_index=True)
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
@@ -506,12 +505,25 @@ st.subheader("📚 Preview DB storico")
 if df_historical is not None:
     st.dataframe(df_historical.tail(50), use_container_width=True)
 
-st.subheader("📦 Preview DB aggiornato")
-df_output = load_output_if_exists(OUTPUT_PATH)
-if df_output is not None:
-    st.dataframe(df_output.tail(50), use_container_width=True)
+
+st.subheader("📦 Preview DB aggiornato (Supabase)")
+
+response = supabase.table("dataset_history") \
+    .select("*") \
+    .order("Datetime", desc=True) \
+    .limit(50) \
+    .execute()
+
+df_output = pd.DataFrame(response.data)
+
+if not df_output.empty:
+    # conversione datetime per sicurezza
+    df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
+
+    st.dataframe(df_output, use_container_width=True)
 else:
-    st.warning("Il file final_dataset_intra_day.parquet non esiste ancora.")
+    st.warning("⚠️ Nessun dato presente sul db SQL")
+
 
 from pathlib import Path
 import gdown
