@@ -25,3 +25,4 @@ openmeteo-sdk==1.26.0
 catboost
 plotly
 supabase
+dropbox
