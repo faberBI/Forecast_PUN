@@ -462,6 +462,32 @@ else:
 
 from pathlib import Path
 import gdown
+
+# ===== costanti (stesse del training!)
+OFFPEAK_WEIGHT_BASE = 1.0
+PEAK_WEIGHT_BASE = 1.5
+MIDDAY_WEIGHT = 2.5
+EVENING_WEIGHT = 3.0
+
+MIDDAY_QOD = range(48, 68)
+EVENING_QOD = range(76, 87)
+
+
+def peak_weight_func(index):
+    index = pd.DatetimeIndex(index)
+    qod = index.hour * 4 + (index.minute // 15)
+
+    weights = np.full(len(index), OFFPEAK_WEIGHT_BASE, dtype=float)
+
+    weights[np.isin(qod, list(MIDDAY_QOD))] = MIDDAY_WEIGHT
+    weights[np.isin(qod, list(EVENING_QOD))] = EVENING_WEIGHT
+
+    daytime_mask = (index.hour >= 8) & (index.hour < 21)
+    weights[(weights == OFFPEAK_WEIGHT_BASE) & daytime_mask] = PEAK_WEIGHT_BASE
+
+    return weights
+
+
 import joblib
 
 MODEL_DIR = Path("models")
