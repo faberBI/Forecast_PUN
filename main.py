@@ -288,10 +288,16 @@ def pipeline_run():
 
     df.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
     df = df.reset_index(drop=True)
+
     missing = [c for c in FEATURES_NEW if c not in df.columns]
+    extra = [c for c in df.columns if c not in FEATURES_NEW]
+
     if missing:
-      st.error(f"❌ Feature mancanti: {missing}")
-      raise ValueError("Schema mismatch -> s
+        st.error(f"❌ Feature mancanti: {missing}")
+        raise ValueError("Schema mismatch -> stop pipeline")
+
+    if extra:
+        st.warning(f"⚠️ Feature extra ignorate: {extra}")
 
     # =========================================================
     # FEATURE ALIGNMENT - FEDELE AL CODICE ORIGINALE
