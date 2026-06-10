@@ -1,23 +1,24 @@
-streamlit
+streamlit==1.36.0
 
-pandas
-numpy
+pandas==2.3.3
+numpy==2.1.3
 pyarrow
 
-joblib
-gdown
-PyYAML
+joblib==1.5.3
+gdown==6.0.0
+PyYAML==6.0.3
 
-lightgbm
-scikit-learn
-skforecast
+lightgbm==4.6.0
+scikit-learn==1.8.0
+skforecast==0.22.0
 
-openpyxl
-requests
+openpyxl==3.1.5
+requests==2.32.5
 
-holidays
-yfinance
+holidays==0.98
+yfinance==1.4.1
 
-requests-cache
-retry-requests
-openmeteo-requests
+requests-cache==1.3.2
+retry-requests==2.0.0
+openmeteo-requests==1.7.5
+openmeteo-sdk==1.26.0
