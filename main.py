@@ -370,11 +370,9 @@ def pipeline_run():
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
     # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
+
     df_to_db = df_final.reset_index().copy()
-    # conversione datetime → stringa
-    df_to_db["Datetime"] = df_to_db["Datetime"].astype(str)
-    records = df_to_db.to_dict(orient="records")
-    # ✅ UPSERT
+    records = df_to_supabase_records(df_to_db)
     supabase.table("dataset_history").upsert(records).execute()
     log("✅ Dataset salvato su Supabase")
     return df_final, log_lines
@@ -640,11 +638,9 @@ if run_forecast:
 
     df_all.to_parquet(FORECAST_PATH)
     preds_to_db = preds_to_save.copy()
-  
-    preds_to_db["Datetime"] = preds_to_db["Datetime"].astype(str)
-    preds_to_db["created_at"] = preds_to_db["created_at"].astype(str)
-    records = preds_to_db.to_dict(orient="records")
+    records = df_to_supabase_records(preds_to_db)
     supabase.table("forecast_history").upsert(records).execute()
+
 
 
     st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
@@ -742,10 +738,9 @@ if uploaded_file is not None:
               df_err_db = df_all.reset_index()
             else:
               df_err_db = df_all.copy()
-              
-            df_err_db["Datetime"] = df_err_db["Datetime"].astype(str)
-            records = df_err_db.to_dict(orient="records")
+            records = df_to_supabase_records(df_err_db)
             supabase.table("error_history").upsert(records).execute()
+
             st.success("✅ Error history aggiornato")
             # ==============================================
             # 7. METRICHE
