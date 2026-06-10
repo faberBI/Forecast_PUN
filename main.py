@@ -356,6 +356,9 @@ def pipeline_run():
     # elimina da df_old tutto ciò che è già presente in df_new per Datetime
     df_old = df_old[~df_old.index.isin(df_new["Datetime"])]
 
+    st.dataframe(df_old)
+    st.dataframe(df_new)
+  
     df_old.reset_index(inplace=True)
 
     df_final = pd.concat([df_old, df_new], ignore_index=True)
