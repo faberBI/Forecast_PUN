@@ -33,6 +33,7 @@ features:
     - cloud_cover_mean
     - forecast_total_load_MW
     - actual_generation_GWh_hydro
+    - PUN
 
   SELECTED_EXOG:
     - minute
