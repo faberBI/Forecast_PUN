@@ -170,3 +170,96 @@ def pun_to_datetime(df):
     df = df.set_index("Datetime").sort_index()
 
     return df
+
+
+import plotly.graph_objects as go
+import pandas as pd
+
+
+def plot_forecast_pun(preds: pd.DataFrame):
+
+    df_plot = preds.copy()
+
+    if "Datetime" in df_plot.columns:
+        df_plot["Datetime"] = pd.to_datetime(df_plot["Datetime"])
+
+    # ============================
+    # METRICHE
+    # ============================
+    stats = {
+        "min": round(df_plot["pred"].min(), 2),
+        "max": round(df_plot["pred"].max(), 2),
+        "mean": round(df_plot["pred"].mean(), 2),
+    }
+
+    # ============================
+    # INDEX MIN/MAX
+    # ============================
+    idx_min = df_plot["pred"].idxmin()
+    idx_max = df_plot["pred"].idxmax()
+
+    # ============================
+    # FIGURA
+    # ============================
+    fig = go.Figure()
+
+    # linea forecast
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Datetime"],
+            y=df_plot["pred"],
+            mode="lines",
+            name="Forecast",
+            line=dict(width=3),
+            hovertemplate="<b>%{x}</b><br>PUN: %{y:.2f} €/MWh<extra></extra>"
+        )
+    )
+
+    # massimo
+    fig.add_trace(
+        go.Scatter(
+            x=[df_plot.loc[idx_max, "Datetime"]],
+            y=[df_plot.loc[idx_max, "pred"]],
+            mode="markers+text",
+            name="Max",
+            text=[f"{df_plot.loc[idx_max, 'pred']:.2f}"],
+            textposition="top center",
+            marker=dict(size=10),
+        )
+    )
+
+    # minimo
+    fig.add_trace(
+        go.Scatter(
+            x=[df_plot.loc[idx_min, "Datetime"]],
+            y=[df_plot.loc[idx_min, "pred"]],
+            mode="markers+text",
+            name="Min",
+            text=[f"{df_plot.loc[idx_min, 'pred']:.2f}"],
+            textposition="bottom center",
+            marker=dict(size=10),
+        )
+    )
+
+    # highlight fascia peak (8-20)
+    for ts in df_plot["Datetime"]:
+        if 8 <= ts.hour < 21:
+            fig.add_vrect(
+                x0=ts,
+                x1=ts + pd.Timedelta(minutes=15),
+                fillcolor="orange",
+                opacity=0.02,
+                line_width=0
+            )
+
+    fig.update_layout(
+        title="Forecast Day-Ahead PUN",
+        xaxis_title="Datetime",
+        yaxis_title="€/MWh",
+        height=500,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+
+    return fig, stats
+
