@@ -488,7 +488,6 @@ def peak_weight_func(index):
     return weights
 
 
-import joblib
 
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
@@ -496,27 +495,39 @@ MODEL_DIR.mkdir(exist_ok=True)
 MODEL_PATH = MODEL_DIR / "pun_full_pipeline.pkl"
 FILE_ID = st.secrets.get("MODEL_PRODUCTION", os.getenv("MODEL_PRODUCTION", "")) 
 
+import traceback
+import joblib
+import gdown
+import pandas as pd
+import streamlit as st
+
 @st.cache_resource
 def load_model_bundle():
 
-    if not MODEL_PATH.exists():
+    if not FILE_ID:
+        st.error("❌ MODEL_PRODUCTION non configurato nei secrets")
+        raise ValueError("Missing FILE_ID")
+
+    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size == 0:
         today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
-        st.info(f"📥 Download modello aggiornato al{today_minus_1}...")
-        
-        try:
-          gdown.download(
-          f"https://drive.google.com/uc?id={FILE_ID}",
-          str(MODEL_PATH),
-          quiet=False,
-          fuzzy=True)
-        except Exception as e:
-          st.error(f"❌ Errore download modello: {e}")
+        st.info(
+            f"📥 Download modello aggiornato al {today_minus_1.strftime('%d-%m-%Y')}..."
+        )
+
+        gdown.download(
+            f"https://drive.google.com/uc?export=download&id={FILE_ID}",
+            str(MODEL_PATH),
+            quiet=False,
+        )
+
+    try:
+        bundle = joblib.load(MODEL_PATH)
+        return bundle
+
+    except Exception as e:
+        st.error(f"❌ Errore caricamento modello: {type(e).__name__}: {e}")
+        st.code(traceback.format_exc(), language="python")
         raise
-
-
-    bundle = joblib.load(MODEL_PATH)
-
-    return bundle
 
 
 # ✅ USO
