@@ -1,0 +1,38 @@
+features:
+
+  FEATURES_OLD:
+    - minute
+    - lag_2d
+    - lag_7d
+    - pun_ret_1h
+    - pun_ret_1d
+    - pun_ret_7d
+    - momentum_4h
+    - momentum_1d
+    - bologna_temperature_2m
+    - bari_wind_speed_80m
+    - cloud_cover_mean
+    - forecast_total_load_MW
+    - actual_generation_GWh_hydro
+    - load_ramp_1h
+    - load_forecast_error
+    - PUN
+
+  FEATURES_NEW:
+    - Datetime
+    - minute
+    - lag_2d
+    - lag_7d
+    - pun_ret_1h
+    - pun_ret_1d
+    - pun_ret_7d
+    - momentum_4h
+    - momentum_1d
+    - bologna_temperature_2m
+    - bari_wind_speed_80m
+    - cloud_cover_mean
+    - forecast_total_load_MW
+    - actual_generation_GWh_hydro
+    - load_ramp_1h
+    - load_forecast_error
+    - PUN
