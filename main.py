@@ -426,3 +426,37 @@ if df_output is not None:
     st.dataframe(df_output.tail(50), use_container_width=True)
 else:
     st.warning("Il file final_dataset_intra_day.parquet non esiste ancora.")
+
+from pathlib import Path
+import gdown
+import joblib
+
+MODEL_DIR = Path("models")
+MODEL_DIR.mkdir(exist_ok=True)
+
+MODEL_PATH = MODEL_DIR / "pun_full_pipeline.pkl"
+FILE_ID = st.secrets.get("MODEL_PRODUCTION", os.getenv("MODEL_PRODUCTION", "")) 
+
+@st.cache_resource
+def load_model_bundle():
+
+    if not MODEL_PATH.exists():
+
+        st.info("📥 Download modello aggiornato...")
+
+        gdown.download(
+            f"https://drive.google.com/uc?id={FILE_ID}",
+            str(MODEL_PATH),
+            quiet=False
+        )
+
+    bundle = joblib.load(MODEL_PATH)
+
+    return bundle
+
+
+# ✅ USO
+bundle = load_model_bundle()
+
+model_base = bundle["base_model"]
+residual_model = bundle["residual_model"]
