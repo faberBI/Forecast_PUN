@@ -24,7 +24,7 @@ config = load_config()
 
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
-SELECTED_EXOG = config["features"]["SELECT
+SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
 
 # =========================================================
 # CONFIG UI
