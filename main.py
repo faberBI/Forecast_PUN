@@ -357,14 +357,9 @@ def pipeline_run():
     df_old = df_old[~df_old.index.isin(df_new["Datetime"])]  
     df_old.reset_index(inplace=True)
 
-    st.dataframe(df_old.tail(50))
-    st.dataframe(df_new.tail(50))
-
-    df_final = pd.concat([df_old, df_new], ignore_index=True)
+    df_final = pd.concat([df_old, df_new],axis = 0, ignore_index=True)
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
     df_final.set_index("Datetime", inplace=True)
-
-    st.dataframe(df_final.tail(50))
 
     log(f"Shape finale: {df_final.shape}")
     log(f"Ultima data finale: {df_final.index.max()}")
@@ -376,6 +371,7 @@ def pipeline_run():
     # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
 
     df_to_db = df_final.reset_index().copy()
+    st.dataframe(df_to_db.tail(50))
     records = df_to_supabase_records(df_to_db)
     supabase.table("dataset_history").upsert(records).execute()
     log("✅ Dataset salvato su Supabase")
