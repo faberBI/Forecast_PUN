@@ -565,7 +565,7 @@ model_base = bundle["base_model"]
 
 st.write(f'Modello aggiornato caricato ✅')
 
-selected_exog = bundle["selected_exog"]
+selected_exog = bundle["SELECTED_EXOG"]
 
 st.write(f'Varibaili esogene aggiornate✅')
 
