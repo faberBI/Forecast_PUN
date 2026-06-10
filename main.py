@@ -21,7 +21,7 @@ def load_config():
         return yaml.safe_load(f)
 
 config = load_config()
-st.write("CONFIG:", config)
+
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
 SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
@@ -414,13 +414,6 @@ WINDOW = 96 * 7   # 7 giorni
 
 
 drift_cols = SELECTED_EXOG
-
-missing = [c for c in drift_cols if c not in df_updated.columns]
-
-if missing:
-    st.warning(f"⚠️ Colonne mancanti nel drift: {missing}")
-    drift_cols = [c for c in drift_cols if c in df_updated.columns]
-
 
 if run_update:
     try:
