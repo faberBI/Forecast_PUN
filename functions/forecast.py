@@ -150,3 +150,23 @@ def forecast_day_ahead_96_base(
     })
 
     return out
+
+def pun_to_datetime(df):
+
+    df = df.copy()
+
+    df["Data"] = pd.to_datetime(df["Data"], dayfirst=True)
+
+    # minuto da periodo
+    df["Minute"] = (df["Periodo"] - 1) * 15
+
+    df["Datetime"] = df["Data"] + pd.to_timedelta(
+        (df["Ora"] - 1) * 60 + df["Minute"],
+        unit="m"
+    )
+
+    df = df[["Datetime", "PUN"]]
+
+    df = df.set_index("Datetime").sort_index()
+
+    return df
