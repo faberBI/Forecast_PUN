@@ -5,9 +5,10 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy.stats import ks_2samp
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient)
+from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift)
 from functions.forecast import forecast_day_ahead_96_base
 
 import yaml
@@ -409,10 +410,37 @@ with right:
 # =========================================================
 # EXECUTION
 # =========================================================
+WINDOW = 96 * 7   # 7 giorni
+
 if run_update:
     try:
         with st.spinner("🚀 Aggiornamento dataset in corso..."):
             df_updated, logs = pipeline_run()
+
+            # ✅ DRIFT CHECK
+            drift_df = ks_drift(
+                df_historical.tail(WINDOW),
+                df_updated.tail(WINDOW),
+                selected_exog
+            )
+
+            st.subheader("📊 Covariate Drift (KS Test)")
+
+            if not drift_df.empty:
+                st.dataframe(drift_df)
+
+
+                n_drift = drift_df["drift_flag"].sum()
+
+                if n_drift >= 5:
+                    st.error("🚨 Drift forte → retrain consigliato")
+                elif n_drift > 0:
+                    st.warning("⚠️ Drift moderato → monitorare")
+                else:
+                    st.success("✅ Nessun drift significativo")
+
+            else:
+                st.warning("⚠️ Drift non calcolabile (dati insufficienti)")
 
         st.success("✅ Dataset aggiornato correttamente")
 
@@ -443,7 +471,7 @@ if run_update:
         st.error(f"❌ Errore durante l'aggiornamento: {e}")
         st.code(traceback.format_exc(), language="python")
 
-
+  
 st.divider()
 
 
