@@ -8,12 +8,13 @@ import streamlit as st
 
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient)
 
-
 import yaml
+
+CONFIG_PATH = "config/config.yaml"
 
 @st.cache_data
 def load_config():
-    with open("config/config.yml", "r") as f:
+    with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
 config = load_config()
