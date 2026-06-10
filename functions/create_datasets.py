@@ -1298,4 +1298,4 @@ def df_to_supabase_records(df: pd.DataFrame):
     df = df.where(pd.notnull(df), None)
 
     return df.to_dict(orient="records")
-``
+
