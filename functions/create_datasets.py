@@ -1300,7 +1300,7 @@ def df_to_supabase_records(df: pd.DataFrame):
 
 
 
-def load_dataset_history_from_supabase():
+def load_dataset_history_from_supabase(supabase):
     all_rows = []
     page_size = 1000
     start = 0
@@ -1335,5 +1335,6 @@ def load_dataset_history_from_supabase():
     df = df.asfreq("15min").ffill()
 
     return df
+
 
 
