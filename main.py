@@ -654,7 +654,8 @@ from io import BytesIO
 # =========================================================
 # 1. UPLOAD FILE PUN REALE
 # =========================================================
-uploaded_file = st.file_uploader("📥 Carica file PUN reale (Add_on_Pun.xlsx)", type=["xlsx"])
+today = date.today()
+uploaded_file = st.file_uploader(f"📥 Carica file PUN rileavati a {today}", type=["xlsx"])
 # =========================================================
 # 2. PROCESSAMENTO
 # =========================================================
