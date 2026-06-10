@@ -136,31 +136,49 @@ def prepare_pun(pun_fe, pun_path: str) -> pd.DataFrame:
     return df
 
 
-def prepare_terna(terna, start_date_terna: str, end_date_terna: str) -> pd.DataFrame:
+def prepare_terna(terna, start, end):
     def clean(df):
         return terna.clean_terna_df(df)
 
-    load = clean(terna.get_total_load(start_date_terna, end_date_terna))
-    market = clean(terna.get_market_load(start_date_terna, end_date_terna))
+    load = clean(terna.get_total_load(start, end))
+    forecast = clean(terna.get_forecast_load(start, end))   # <-- AGGIUNTO
+    market = clean(terna.get_market_load(start, end))
 
-    wind = clean(terna.get_generation(start_date_terna, end_date_terna, "Wind")).rename(
+    wind = clean(terna.get_generation(start, end, "Wind")).rename(
         columns={"actual_generation_MW": "wind_generation_MW"}
     )
-    solar = clean(terna.get_generation(start_date_terna, end_date_terna, "Photovoltaic")).rename(
+    solar = clean(terna.get_generation(start, end, "Photovoltaic")).rename(
         columns={"actual_generation_MW": "solar_generation_MW"}
     )
-    hydro = clean(terna.get_generation(start_date_terna, end_date_terna, "Hydro")).rename(
+    hydro = clean(terna.get_generation(start, end, "Hydro")).rename(
         columns={"actual_generation_MW": "hydro_generation_MW"}
     )
 
-    df = load.merge(market, on="date", how="outer")
+    df = load.merge(forecast, on="date", how="outer")   # <-- forecast dentro
+    df = df.merge(market, on="date", how="outer")
     df = terna.safe_merge(df, wind, "wind")
     df = terna.safe_merge(df, solar, "solar")
     df = terna.safe_merge(df, hydro, "hydro")
 
     df = terna.clean_terna_features(df)
-    df["Datetime"] = pd.to_datetime(df["date"])
 
+    # coercizione numerica robusta
+    numeric_cols = [
+        "total_load_MW",
+        "market_load_MW",
+        "forecast_total_load_MW",
+        "forecast_market_load_MW",
+        "actual_generation_GWh",
+        "actual_generation_GWh_solar",
+        "actual_generation_GWh_hydro",
+        "load_ramp_1h",
+    ]
+
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["Datetime"] = pd.to_datetime(df["date"])
     return df
 
 
@@ -177,22 +195,37 @@ def merge_all(pun_df: pd.DataFrame, meteo_df: pd.DataFrame, terna_df: pd.DataFra
     return df
 
 
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
+
+def add_features(df):
     df = df.copy()
+
+    numeric_cols = [
+        "total_load_MW",
+        "actual_generation_MW",
+        "renewable_generation_MW",
+        "forecast_total_load_MW",
+        "actual_generation_GWh",
+        "actual_generation_GWh_solar",
+        "actual_generation_GWh_hydro",
+    ]
+
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
     if {"total_load_MW", "actual_generation_MW"} <= set(df.columns):
         df["net_load"] = df["total_load_MW"] - df["actual_generation_MW"]
 
-    if "renewable_generation_MW" in df.columns:
+    if {"renewable_generation_MW", "total_load_MW"} <= set(df.columns):
         df["renewable_share"] = df["renewable_generation_MW"] / (df["total_load_MW"] + 1e-6)
 
-    df["load_ramp_1h"] = df["total_load_MW"].diff(4)
+    if "total_load_MW" in df.columns:
+        df["load_ramp_1h"] = df["total_load_MW"].diff(4)
 
-    if "forecast_total_load_MW" in df.columns:
+    if {"forecast_total_load_MW", "total_load_MW"} <= set(df.columns):
         df["load_forecast_error"] = df["forecast_total_load_MW"] - df["total_load_MW"]
 
     return df
-
 
 def make_quarter_hour(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
