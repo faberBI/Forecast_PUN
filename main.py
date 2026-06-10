@@ -9,7 +9,7 @@ from scipy.stats import ks_2samp
 import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, df_to_supabase_records)
+from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, df_to_supabase_records, load_dataset_history_from_supabase)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 
 import yaml
@@ -606,8 +606,8 @@ st.write(f'Varibaili esogene aggiornate✅')
 
 
 
-response = supabase.table("dataset_history").select("*").execute()
-df_hist = pd.DataFrame(response.data)
+
+df_hist = load_dataset_history_from_supabase()
 
 if df_hist.empty:
     st.error("❌ Dataset vuoto in Supabase → prima esegui aggiornamento")
