@@ -34,7 +34,6 @@ features:
     - forecast_total_load_MW
     - actual_generation_GWh_hydro
 
-features:
   SELECTED_EXOG:
     - minute
     - lag_2d
@@ -51,8 +50,3 @@ features:
     - actual_generation_GWh_hydro
     - load_ramp_1h
     - load_forecast_error
-
-
-    - load_ramp_1h
-    - load_forecast_error
-    - PUN
