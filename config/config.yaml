@@ -1,5 +1,4 @@
 features:
-
   FEATURES_OLD:
     - minute
     - lag_2d
@@ -18,7 +17,7 @@ features:
     - load_forecast_error
     - PUN
 
-    FEATURES_NEW:
+  FEATURES_NEW:
     - Datetime
     - minute
     - lag_2d
@@ -36,7 +35,7 @@ features:
     - load_ramp_1h
     - load_forecast_error
     - PUN
-    
+
   SELECTED_EXOG:
     - minute
     - lag_2d
