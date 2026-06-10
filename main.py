@@ -627,7 +627,7 @@ if run_forecast:
 
     c1, c2 = st.columns(2)
     c1.metric("Orizzonte", len(preds))
-    c2.metric("Start forecast", preds["Datetime"].min())
+    c2.metric("Start forecast", preds["Datetime"].min().strftime("%d-%m-%Y %H:%M"))
 
     st.dataframe(preds)
 
