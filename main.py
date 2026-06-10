@@ -571,6 +571,11 @@ st.write(f'Varibaili esogene aggiornate✅')
 
 df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
 
+
+st.write("Columns:", df_hist.columns)
+st.write("Index type:", type(df_hist.index))
+
+
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
 FORECAST_PATH = "dati_output/forecast_history.parquet"
