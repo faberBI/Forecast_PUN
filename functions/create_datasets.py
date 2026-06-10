@@ -1250,3 +1250,32 @@ class TernaClient:
         df["Datetime"] = pd.to_datetime(df["date"])
 
         return df
+
+
+from scipy.stats import ks_2samp
+
+def ks_drift(df_old, df_new, cols, alpha=0.05):
+
+    drift = {}
+
+    for c in cols:
+        if c in df_old.columns and c in df_new.columns:
+
+            x_old = df_old[c].dropna()
+            x_new = df_new[c].dropna()
+
+            if len(x_old) > 50 and len(x_new) > 50:
+                stat, p = ks_2samp(x_old, x_new)
+
+                drift[c] = {
+                    "ks_stat": stat,
+                    "p_value": p,
+                    "drift_flag": p < alpha
+                }
+
+    df = pd.DataFrame(drift).T
+
+    if not df.empty:
+        df = df.sort_values("ks_stat", ascending=False)
+
+    return df
