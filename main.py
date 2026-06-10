@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.stats import ks_2samp
+import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift)
-from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime)
+from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 
 import yaml
 
@@ -623,13 +624,15 @@ if run_forecast:
     st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
 
     # UI
-    st.subheader("📊 Info Forecast")
-
-    c1, c2 = st.columns(2)
-    c1.metric("Orizzonte", len(preds))
-    c2.metric("Start forecast", preds["Datetime"].min().strftime("%d-%m-%Y %H:%M"))
-
+    fig, stats = plot_forecast_pun(preds)
+    st.subheader("📈 Forecast intraday PUN")
     st.dataframe(preds)
+  
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Min", stats["min"])
+    c2.metric("Max", stats["max"])
+    c3.metric("Mean", stats["mean"])
+    st.plotly_chart(fig, use_container_width=True)
 
     st.download_button(
         label="⬇️ Scarica forecast",
