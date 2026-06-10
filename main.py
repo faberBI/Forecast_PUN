@@ -371,6 +371,7 @@ def pipeline_run():
     # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
 
     df_to_db = df_final.reset_index().copy()
+    st.dataframe(df_final.tail(50))
     st.dataframe(df_to_db.tail(50))
     records = df_to_supabase_records(df_to_db)
     supabase.table("dataset_history").upsert(records).execute()
