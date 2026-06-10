@@ -9,7 +9,7 @@ from scipy.stats import ks_2samp
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift)
-from functions.forecast import forecast_day_ahead_96_base
+from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime)
 
 import yaml
 
@@ -573,7 +573,10 @@ df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
 
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
+FORECAST_PATH = "dati_output/forecast_history.parquet"
+
 if run_forecast:
+
     preds = forecast_day_ahead_96_base(
         df_hist=df_hist,
         best_forecaster=model_base,
@@ -585,17 +588,160 @@ if run_forecast:
 
     st.success("✅ Forecast completato")
 
+    # ==========================================
+    # SAVE FORECAST (gestione file non esistente)
+    # ==========================================
+    preds_to_save = preds.copy()
+    preds_to_save["created_at"] = pd.Timestamp.now()
+
+    if os.path.exists(FORECAST_PATH):
+        df_old = pd.read_parquet(FORECAST_PATH)
+        df_all = pd.concat([df_old, preds_to_save])
+        df_all = df_all.drop_duplicates(subset=["Datetime"])
+    else:
+        df_all = preds_to_save
+        st.info("📦 Primo forecast salvato (inizializzazione storico)")
+
+    df_all = df_all.sort_values("Datetime")
+
+    df_all.to_parquet(FORECAST_PATH)
+
+    st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
+
+    # UI
     st.subheader("📊 Info Forecast")
 
     c1, c2 = st.columns(2)
-
     c1.metric("Orizzonte", len(preds))
     c2.metric("Start forecast", preds["Datetime"].min())
+
     st.dataframe(preds)
-  
+
     st.download_button(
         label="⬇️ Scarica forecast",
         data=preds.to_csv(index=False),
         file_name="forecast_day_ahead.csv",
         mime="text/csv"
     )
+
+# =========================================================
+# 📉 MODEL MONITORING (Concept Drift)
+# =========================================================
+
+st.divider()
+st.header("📉 Model Monitoring (Concept Drift)")
+
+FORECAST_PATH = "dati_output/forecast_history.parquet"
+ERROR_PATH = "dati_output/error_history.parquet"
+
+from io import BytesIO
+
+
+# =========================================================
+# 1. UPLOAD FILE PUN REALE
+# =========================================================
+uploaded_file = st.file_uploader("📥 Carica file PUN reale (Add_on_Pun.xlsx)", type=["xlsx"])
+# =========================================================
+# 2. PROCESSAMENTO
+# =========================================================
+if uploaded_file is not None:
+
+    try:
+        df_pun_excel = pd.read_excel(uploaded_file)
+
+        df_real = pun_to_datetime(df_pun_excel)
+
+        st.success("✅ File PUN caricato e trasformato")
+
+        st.dataframe(df_real.head())
+
+        # =====================================================
+        # 3. CARICA FORECAST STORICO
+        # =====================================================
+        if not os.path.exists(FORECAST_PATH):
+            st.warning("⚠️ Nessun forecast salvato")
+        else:
+            df_forecast = pd.read_parquet(FORECAST_PATH)
+
+            st.info(f"Forecast caricati: {len(df_forecast)} righe")
+
+            # =================================================
+            # 4. MERGE
+            # =================================================
+            df_eval = df_forecast.merge(
+                df_real,
+                on="Datetime",
+                how="inner"
+            )
+
+            if df_eval.empty:
+                st.warning("⚠️ Nessun matching tra forecast e dati reali")
+            else:
+                # ==============================================
+                # 5. ERRORI
+                # ==============================================
+                df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
+                df_eval["abs_error"] = df_eval["error"].abs()
+
+                # ==============================================
+                # 6. SAVE ERROR HISTORY
+                # ==============================================
+                if os.path.exists(ERROR_PATH):
+                    df_old = pd.read_parquet(ERROR_PATH)
+                    df_all = pd.concat([df_old, df_eval])
+                    df_all = df_all.drop_duplicates(subset=["Datetime"])
+                else:
+                    df_all = df_eval
+
+                df_all = df_all.sort_values("Datetime")
+
+                df_all.to_parquet(ERROR_PATH)
+
+                st.success("✅ Error history aggiornato")
+
+                # ==============================================
+                # 7. METRICHE
+                # ==============================================
+                df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
+                df_all["rmse_rolling"] = (df_all["error"]**2).rolling(96).mean()**0.5
+
+                # ==============================================
+                # 8. UI
+                # ==============================================
+                st.subheader("📊 Metriche")
+
+                c1, c2 = st.columns(2)
+
+                c1.metric("MAE recente", round(df_all["mae_rolling"].iloc[-1], 2))
+                c2.metric("RMSE recente", round(df_all["rmse_rolling"].iloc[-1], 2))
+
+                st.subheader("📈 Trend errori")
+
+                st.line_chart(
+                    df_all[["mae_rolling", "rmse_rolling"]].dropna()
+                )
+
+                st.subheader("📊 Errori ultimi punti")
+                st.dataframe(df_all[["Datetime", "pred", "PUN", "error"]].tail(50))
+
+                # ==============================================
+                # 9. ALERT
+                # ==============================================
+                if df_all["mae_rolling"].iloc[-1] > 10:
+                    st.error("🚨 Concept drift rilevato → retraining consigliato")
+                else:
+                    st.success("✅ Modello stabile")
+
+                # ==============================================
+                # 10. DOWNLOAD
+                # ==============================================
+                st.download_button(
+                    label="⬇️ Scarica error history",
+                    data=df_all.to_csv(index=False),
+                    file_name="error_history.csv",
+                    mime="text/csv"
+                )
+
+    except Exception as e:
+        st.error(f"❌ Errore processamento PUN: {e}")
+        st.code(traceback.format_exc(), language="python")
