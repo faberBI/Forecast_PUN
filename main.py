@@ -27,6 +27,15 @@ FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
 SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
 
+
+from supabase import create_client
+
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+
+supabase = create_client(url, key)
+
+
 # =========================================================
 # CONFIG UI
 # =========================================================
@@ -358,6 +367,11 @@ def pipeline_run():
 
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
+    df_to_db = df_final.reset_index().copy()
+    df_to_db["Datetime"] = df_to_db["Datetime"].astype(str)
+    records = df_to_db.to_dict(orient="records")
+    supabase.table("dataset_history").upsert(records).execute()
+    log("Salvato dataset su Supabase ✅")
 
     return df_final, log_lines
 
@@ -573,7 +587,10 @@ selected_exog = model_base.exog_names_in_
 
 st.write(f'Varibaili esogene aggiornate✅')
 
-df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
+
+response = supabase.table("dataset_history").select("*").execute()
+df_hist = pd.DataFrame(response.data)
+
 
 if not isinstance(df_hist.index, pd.DatetimeIndex):
     if "Datetime" in df_hist.columns:
@@ -620,6 +637,10 @@ if run_forecast:
     df_all = df_all.sort_values("Datetime")
 
     df_all.to_parquet(FORECAST_PATH)
+    
+    records = df_all.to_dict(orient="records")
+
+    supabase.table("forecast_history").upsert(records).execute()
 
     st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
 
