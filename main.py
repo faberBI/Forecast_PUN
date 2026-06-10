@@ -545,8 +545,6 @@ FILE_ID = st.secrets.get("MODEL_PRODUCTION", os.getenv("MODEL_PRODUCTION", ""))
 import traceback
 import joblib
 import gdown
-import pandas as pd
-import streamlit as st
 
 @st.cache_resource
 def load_model_bundle():
@@ -701,12 +699,12 @@ if uploaded_file is not None:
         # =====================================================
         # 3. CARICA FORECAST STORICO
         # =====================================================
-        response = supabase.table("forecast_history").select("*").execute()
-        df_forecast = pd.DataFrame(response.data)
-        if df_forecast.empty:
-          st.warning("⚠️ Nessun forecast presente in Supabase")
+        if os.path.exists(FORECAST_PATH):
+          df_forecast = pd.read_parquet(FORECAST_PATH)
+        else:
+          st.warning("⚠️ Nessun forecast disponibile")
           st.stop()
-        
+
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
         st.info(f"Forecast caricati: {len(df_forecast)} righe")
         # =================================================
