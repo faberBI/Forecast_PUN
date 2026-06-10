@@ -1297,5 +1297,40 @@ def df_to_supabase_records(df: pd.DataFrame):
     df = df.astype(object)
     df = df.where(pd.notnull(df), None)
 
+def load_dataset_history_from_supabase():
+    all_rows = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        resp = (
+            supabase.table("dataset_history")
+            .select("*")
+            .order("Datetime", desc=False)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+
+        page = resp.data or []
+        if not page:
+            break
+
+        all_rows.extend(page)
+
+        if len(page) < page_size:
+            break
+
+        start += page_size
+
+    df = pd.DataFrame(all_rows)
+
+    if df.empty:
+        return df
+
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+    df = df.set_index("Datetime").sort_index()
+    df = df.asfreq("15min").ffill()
+
+    return df
     return df.to_dict(orient="records")
 
