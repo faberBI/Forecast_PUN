@@ -571,9 +571,15 @@ st.write(f'Varibaili esogene aggiornate✅')
 
 df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
 
+if not isinstance(df_hist.index, pd.DatetimeIndex):
+    if "Datetime" in df_hist.columns:
+        df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
+        df_hist = df_hist.set_index("Datetime")
+    else:
+        raise ValueError("❌ Il dataset non ha né DatetimeIndex né colonna 'Datetime'")
 
-st.write("Columns:", df_hist.columns)
-st.write("Index type:", type(df_hist.index))
+df_hist = df_hist.sort_index()
+df_hist = df_hist.asfreq("15min").ffill()
 
 
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
