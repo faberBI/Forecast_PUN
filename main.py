@@ -141,7 +141,6 @@ def prepare_terna(terna, start, end):
         return terna.clean_terna_df(df)
 
     load = clean(terna.get_total_load(start, end))
-    forecast = clean(terna.get_forecast_load(start, end))   # <-- AGGIUNTO
     market = clean(terna.get_market_load(start, end))
 
     wind = clean(terna.get_generation(start, end, "Wind")).rename(
@@ -154,15 +153,15 @@ def prepare_terna(terna, start, end):
         columns={"actual_generation_MW": "hydro_generation_MW"}
     )
 
-    df = load.merge(forecast, on="date", how="outer")   # <-- forecast dentro
-    df = df.merge(market, on="date", how="outer")
+    # LOGICA ORIGINALE: niente get_forecast_load separato
+    df = load.merge(market, on="date", how="outer")
     df = terna.safe_merge(df, wind, "wind")
     df = terna.safe_merge(df, solar, "solar")
     df = terna.safe_merge(df, hydro, "hydro")
 
     df = terna.clean_terna_features(df)
 
-    # coercizione numerica robusta
+    # coercizione robusta ai numerici
     numeric_cols = [
         "total_load_MW",
         "market_load_MW",
