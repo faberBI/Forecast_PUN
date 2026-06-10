@@ -1296,6 +1296,9 @@ def df_to_supabase_records(df: pd.DataFrame):
     # 3️⃣ NaN -> None (CRITICO)
     df = df.astype(object)
     df = df.where(pd.notnull(df), None)
+    return df.to_dict(orient="records")
+
+
 
 def load_dataset_history_from_supabase():
     all_rows = []
@@ -1332,5 +1335,5 @@ def load_dataset_history_from_supabase():
     df = df.asfreq("15min").ffill()
 
     return df
-    return df.to_dict(orient="records")
+
 
