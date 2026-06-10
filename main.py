@@ -532,7 +532,6 @@ def load_model_bundle():
 
 # ✅ USO
 bundle = load_model_bundle()
-
-
 model_base = bundle["base_model"]
-residual_model = bundle["residual_model"]
+
+st.write(f'modello aggiornato caricato ✅')
