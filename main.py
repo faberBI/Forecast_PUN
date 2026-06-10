@@ -365,15 +365,20 @@ def pipeline_run():
     log(f"Shape finale: {df_final.shape}")
     log(f"Ultima data finale: {df_final.index.max()}")
 
+    # =========================================================
+    # =========================================================
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
+    # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
     df_to_db = df_final.reset_index().copy()
+    # conversione datetime → stringa
     df_to_db["Datetime"] = df_to_db["Datetime"].astype(str)
     records = df_to_db.to_dict(orient="records")
+    # ✅ UPSERT
     supabase.table("dataset_history").upsert(records).execute()
-    log("Salvato dataset su Supabase ✅")
-
+    log("✅ Dataset salvato su Supabase")
     return df_final, log_lines
+
 
 
 # =========================================================
@@ -588,20 +593,17 @@ selected_exog = model_base.exog_names_in_
 st.write(f'Varibaili esogene aggiornate✅')
 
 
+
 response = supabase.table("dataset_history").select("*").execute()
 df_hist = pd.DataFrame(response.data)
 
+if df_hist.empty:
+    st.error("❌ Dataset vuoto in Supabase → prima esegui aggiornamento")
+    st.stop()
 
-if not isinstance(df_hist.index, pd.DatetimeIndex):
-    if "Datetime" in df_hist.columns:
-        df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
-        df_hist = df_hist.set_index("Datetime")
-    else:
-        raise ValueError("❌ Il dataset non ha né DatetimeIndex né colonna 'Datetime'")
-
-df_hist = df_hist.sort_index()
+df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
+df_hist = df_hist.set_index("Datetime").sort_index()
 df_hist = df_hist.asfreq("15min").ffill()
-
 
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
@@ -637,10 +639,13 @@ if run_forecast:
     df_all = df_all.sort_values("Datetime")
 
     df_all.to_parquet(FORECAST_PATH)
-    
-    records = df_all.to_dict(orient="records")
-
+    preds_to_db = preds_to_save.copy()
+  
+    preds_to_db["Datetime"] = preds_to_db["Datetime"].astype(str)
+    preds_to_db["created_at"] = preds_to_db["created_at"].astype(str)
+    records = preds_to_db.to_dict(orient="records")
     supabase.table("forecast_history").upsert(records).execute()
+
 
     st.write(f"✅ Forecast salvati: {len(preds_to_save)}")
 
@@ -697,89 +702,85 @@ if uploaded_file is not None:
         # =====================================================
         # 3. CARICA FORECAST STORICO
         # =====================================================
-        if not os.path.exists(FORECAST_PATH):
-            st.warning("⚠️ Nessun forecast salvato")
-        else:
-            df_forecast = pd.read_parquet(FORECAST_PATH)
-
-            st.info(f"Forecast caricati: {len(df_forecast)} righe")
-
-            # =================================================
-            # 4. MERGE
-            # =================================================
-            df_eval = df_forecast.merge(
+        response = supabase.table("forecast_history").select("*").execute()
+        df_forecast = pd.DataFrame(response.data)
+        if df_forecast.empty:
+          st.warning("⚠️ Nessun forecast presente in Supabase")
+          st.stop()
+        
+        df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
+        st.info(f"Forecast caricati: {len(df_forecast)} righe")
+        # =================================================
+        # 4. MERGE
+        # =================================================
+        df_eval = df_forecast.merge(
                 df_real,
                 on="Datetime",
                 how="inner"
             )
-
-            if df_eval.empty:
-                st.warning("⚠️ Nessun matching tra forecast e dati reali")
+        if df_eval.empty:
+          st.warning("⚠️ Nessun matching tra forecast e dati reali")
+        
+        else:
+            # ==============================================
+            # 5. ERRORI
+            # ==============================================
+            df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
+            df_eval["abs_error"] = df_eval["error"].abs()
+            # ==============================================
+            # 6. SAVE ERROR HISTORY
+            # ==============================================
+            if os.path.exists(ERROR_PATH):
+                df_old = pd.read_parquet(ERROR_PATH)
+                df_all = pd.concat([df_old, df_eval])
+                df_all = df_all.drop_duplicates(subset=["Datetime"])
             else:
-                # ==============================================
-                # 5. ERRORI
-                # ==============================================
-                df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
-                df_eval["abs_error"] = df_eval["error"].abs()
-
-                # ==============================================
-                # 6. SAVE ERROR HISTORY
-                # ==============================================
-                if os.path.exists(ERROR_PATH):
-                    df_old = pd.read_parquet(ERROR_PATH)
-                    df_all = pd.concat([df_old, df_eval])
-                    df_all = df_all.drop_duplicates(subset=["Datetime"])
-                else:
-                    df_all = df_eval
-
-                df_all = df_all.sort_values("Datetime")
-
-                df_all.to_parquet(ERROR_PATH)
-
-                st.success("✅ Error history aggiornato")
-
-                # ==============================================
-                # 7. METRICHE
-                # ==============================================
-                df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
-                df_all["rmse_rolling"] = (df_all["error"]**2).rolling(96).mean()**0.5
-
-                # ==============================================
-                # 8. UI
-                # ==============================================
-                st.subheader("📊 Metriche")
-
-                c1, c2 = st.columns(2)
-
-                c1.metric("MAE recente", round(df_all["mae_rolling"].iloc[-1], 2))
-                c2.metric("RMSE recente", round(df_all["rmse_rolling"].iloc[-1], 2))
-
-                st.subheader("📈 Trend errori")
-
-                st.line_chart(
-                    df_all[["mae_rolling", "rmse_rolling"]].dropna()
-                )
-
-                st.subheader("📊 Errori ultimi punti")
-                st.dataframe(df_all[["Datetime", "pred", "PUN", "error"]].tail(50))
-
-                # ==============================================
-                # 9. ALERT
-                # ==============================================
-                if df_all["mae_rolling"].iloc[-1] > 10:
-                    st.error("🚨 Concept drift rilevato → retraining consigliato")
-                else:
-                    st.success("✅ Modello stabile")
-
-                # ==============================================
-                # 10. DOWNLOAD
-                # ==============================================
-                st.download_button(
-                    label="⬇️ Scarica error history",
-                    data=df_all.to_csv(index=False),
-                    file_name="error_history.csv",
-                    mime="text/csv"
-                )
+                df_all = df_eval
+            df_all = df_all.sort_values("Datetime")
+            df_all.to_parquet(ERROR_PATH)
+            if "Datetime" not in df_all.columns:
+              df_err_db = df_all.reset_index()
+            else:
+              df_err_db = df_all.copy()
+              
+            df_err_db["Datetime"] = df_err_db["Datetime"].astype(str)
+            records = df_err_db.to_dict(orient="records")
+            supabase.table("error_history").upsert(records).execute()
+            st.success("✅ Error history aggiornato")
+            # ==============================================
+            # 7. METRICHE
+            # ==============================================
+            df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
+            df_all["rmse_rolling"] = (df_all["error"]**2).rolling(96).mean()**0.5
+            # ==============================================
+            # 8. UI
+            # ==============================================
+            st.subheader("📊 Metriche")
+            c1, c2 = st.columns(2)
+            c1.metric("MAE recente", round(df_all["mae_rolling"].iloc[-1], 2))
+            c2.metric("RMSE recente", round(df_all["rmse_rolling"].iloc[-1], 2))
+            st.subheader("📈 Trend errori")
+            st.line_chart(
+                df_all[["mae_rolling", "rmse_rolling"]].dropna()
+            )
+            st.subheader("📊 Errori ultimi punti")
+            st.dataframe(df_all[["Datetime", "pred", "PUN", "error"]].tail(50))
+            # ==============================================
+            # 9. ALERT
+            # ==============================================
+            if df_all["mae_rolling"].iloc[-1] > 10:
+                st.error("🚨 Concept drift rilevato → retraining consigliato")
+            else:
+                st.success("✅ Modello stabile")
+            # ==============================================
+            # 10. DOWNLOAD
+            # ==============================================
+            st.download_button(
+                label="⬇️ Scarica error history",
+                data=df_all.to_csv(index=False),
+                file_name="error_history.csv",
+                mime="text/csv"
+            )
 
     except Exception as e:
         st.error(f"❌ Errore processamento PUN: {e}")
