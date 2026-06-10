@@ -8,6 +8,7 @@ import streamlit as st
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient)
+from functions.forecast import forecast_day_ahead_96_base
 
 import yaml
 
@@ -535,3 +536,19 @@ bundle = load_model_bundle()
 model_base = bundle["base_model"]
 
 st.write(f'modello aggiornato caricato ✅')
+selected_exog = bundle["selected_exog"]
+st.write(f'Varibaili esogene aggiornate✅')
+# df_hist = dataset aggiornato (quello salvato da pipeline)
+df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
+
+preds = forecast_day_ahead_96_base(
+    df_hist=df_hist,
+    best_forecaster=model_base,
+    meteo_downloader=MeteoDownloader(),
+    locations=LOCATIONS,
+    selected_exog=selected_exog,
+    steps=96
+)
+
+print(preds.head())
+print(preds.tail())
