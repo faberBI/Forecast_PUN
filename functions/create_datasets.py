@@ -1282,17 +1282,20 @@ def ks_drift(df_old, df_new, cols, alpha=0.05):
 
 
 def df_to_supabase_records(df: pd.DataFrame):
+
     df = df.copy()
 
-    # 1) Converte eventuali datetime/timestamp in stringa SQL-safe
+    # 1️⃣ datetime -> string
     for c in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[c]):
             df[c] = pd.to_datetime(df[c]).dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 2) Sostituisce inf e -inf con NaN
-    df = df.replace([np.inf, -np.inf], np.nan)
+    # 2️⃣ inf -> NaN
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-    # 3) Converte NaN in None (JSON-compatible)
+    # 3️⃣ NaN -> None (CRITICO)
+    df = df.astype(object)
     df = df.where(pd.notnull(df), None)
 
     return df.to_dict(orient="records")
+``
