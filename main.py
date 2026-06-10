@@ -476,12 +476,17 @@ def load_model_bundle():
     if not MODEL_PATH.exists():
         today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
         st.info(f"📥 Download modello aggiornato al{today_minus_1}...")
+        
+        try:
+          gdown.download(
+          f"https://drive.google.com/uc?id={FILE_ID}",
+          str(MODEL_PATH),
+          quiet=False,
+          fuzzy=True)
+        except Exception as e:
+          st.error(f"❌ Errore download modello: {e}")
+        raise
 
-        gdown.download(
-            f"https://drive.google.com/uc?id={FILE_ID}",
-            str(MODEL_PATH),
-            quiet=False
-        )
 
     bundle = joblib.load(MODEL_PATH)
 
@@ -490,6 +495,7 @@ def load_model_bundle():
 
 # ✅ USO
 bundle = load_model_bundle()
+
 
 model_base = bundle["base_model"]
 residual_model = bundle["residual_model"]
