@@ -18,7 +18,7 @@ features:
     - load_forecast_error
     - PUN
 
-  FEATURES_NEW:
+    FEATURES_NEW:
     - Datetime
     - minute
     - lag_2d
@@ -33,8 +33,10 @@ features:
     - cloud_cover_mean
     - forecast_total_load_MW
     - actual_generation_GWh_hydro
+    - load_ramp_1h
+    - load_forecast_error
     - PUN
-
+    
   SELECTED_EXOG:
     - minute
     - lag_2d
