@@ -21,7 +21,7 @@ def load_config():
         return yaml.safe_load(f)
 
 config = load_config()
-
+st.write("CONFIG:", config)
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
 SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
