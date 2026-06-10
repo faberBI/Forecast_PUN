@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import holidays
 import yfinance as yf
-
+import dropbox
 
 class PUNFeatureEngineering:
 
@@ -1335,6 +1335,15 @@ def load_dataset_history_from_supabase(supabase):
     df = df.asfreq("15min").ffill()
 
     return df
+
+def upload_to_dropbox(local_path, dropbox_path):def upload_tobox(st.secrets["DROPBOX_TOKEN"])
+
+    with open(local_path, "rb") as f:
+        dbx.files_upload(
+            f.read(),
+            dropbox_path,
+            mode=dropbox.files.WriteMode.overwrite
+        )
 
 
 
