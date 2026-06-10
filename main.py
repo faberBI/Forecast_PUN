@@ -24,7 +24,7 @@ config = load_config()
 
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
-
+SELECTED_EXOG = config["features"]["SELECT
 
 # =========================================================
 # CONFIG UI
@@ -412,6 +412,16 @@ with right:
 # =========================================================
 WINDOW = 96 * 7   # 7 giorni
 
+
+drift_cols = SELECTED_EXOG
+
+missing = [c for c in drift_cols if c not in df_updated.columns]
+
+if missing:
+    st.warning(f"⚠️ Colonne mancanti nel drift: {missing}")
+    drift_cols = [c for c in drift_cols if c in df_updated.columns]
+
+
 if run_update:
     try:
         with st.spinner("🚀 Aggiornamento dataset in corso..."):
@@ -421,7 +431,7 @@ if run_update:
             drift_df = ks_drift(
                 df_historical.tail(WINDOW),
                 df_updated.tail(WINDOW),
-                selected_exog
+                drift_cols
             )
 
             st.subheader("📊 Covariate Drift (KS Test)")
