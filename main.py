@@ -535,20 +535,39 @@ def load_model_bundle():
 bundle = load_model_bundle()
 model_base = bundle["base_model"]
 
-st.write(f'modello aggiornato caricato ✅')
+st.write(f'Modello aggiornato caricato ✅')
+
 selected_exog = bundle["selected_exog"]
+
 st.write(f'Varibaili esogene aggiornate✅')
-# df_hist = dataset aggiornato (quello salvato da pipeline)
+
 df_hist = pd.read_parquet("dati_output/final_dataset_intra_day.parquet")
 
-preds = forecast_day_ahead_96_base(
-    df_hist=df_hist,
-    best_forecaster=model_base,
-    meteo_downloader=MeteoDownloader(),
-    locations=LOCATIONS,
-    selected_exog=selected_exog,
-    steps=96
-)
+run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
-print(preds.head())
-print(preds.tail())
+if run_forecast:
+    preds = forecast_day_ahead_96_base(
+        df_hist=df_hist,
+        best_forecaster=model_base,
+        meteo_downloader=MeteoDownloader(),
+        locations=LOCATIONS,
+        selected_exog=selected_exog,
+        steps=96
+    )
+
+    st.success("✅ Forecast completato")
+
+    st.subheader("📊 Info Forecast")
+
+    c1, c2 = st.columns(2)
+
+    c1.metric("Orizzonte", len(preds))
+    c2.metric("Start forecast", preds["Datetime"].min())
+    st.dataframe(preds)
+  
+    st.download_button(
+        label="⬇️ Scarica forecast",
+        data=preds.to_csv(index=False),
+        file_name="forecast_day_ahead.csv",
+        mime="text/csv"
+    )
