@@ -443,6 +443,11 @@ def pipeline_run():
 # =========================================================
 col1, col2 = st.columns(2)
 try:
+    # da cancellare
+    dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+    res = dbx.files_list_folder("")
+    st.write([f.name for f in res.entries])
+
     df_historical = load_from_dropbox(
         "/PUN Forecast/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
