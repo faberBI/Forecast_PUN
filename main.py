@@ -335,6 +335,12 @@ def pipeline_run():
     pun_full["pun_ret_7d"] = pun_full["PUN"].pct_change(96*7).shift(1)
 
     pun_full["momentum_1d"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(96)
+    # minute
+    pun_full["minute"] = pd.to_datetime(pun_full["Datetime"]).dt.minute
+    # pun_ret_1h (4 quarter)
+    pun_full["pun_ret_1h"] = (pun_full["PUN"].pct_change(4).shift(1))
+    # momentum_4h (16 quarter)
+    pun_full["momentum_4h"] = (pun_full["PUN"].shift(1) - pun_full["PUN"].shift(16))
 
 
     # 6️⃣ tieni solo la parte nuova
