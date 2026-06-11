@@ -278,7 +278,7 @@ def pipeline_run():
 
     # storico  
     df_historical = load_from_dropbox(
-      "/forecast_pun/dataset_history.parquet",
+      "/Applicazioni/PUN Forecast/forecast_pun/dataset_history.parquet",
       st.secrets["DROPBOX_TOKEN"]
         ).copy()
 
@@ -444,7 +444,7 @@ def pipeline_run():
 col1, col2 = st.columns(2)
 try:
     df_historical = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
+        "/Applicazioni/PUN Forecast/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     )
 
@@ -568,7 +568,7 @@ st.subheader("📦 Preview DB aggiornato")
 
 try:
     df_output = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
+        "/Applicazioni/PUN Forecast/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     )
 
@@ -663,7 +663,7 @@ st.write(f'Varibaili esogene aggiornate✅')
 #
 try:
     df_hist = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
+        "/Applicazioni/PUN Forecast/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     )
 
