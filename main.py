@@ -825,7 +825,8 @@ if uploaded_file is not None:
             # 9. ALERT
             # ==============================================
             df_all['error_abs_perc'] = np.abs(df_all['pred']-df_all['PUN'])/df_all['PUN']
-            st.line_chart(df_all.set_index("Datetime")["error"])
+            st.line_chart(df_all.set_index("Datetime")["pred"])
+            st.line_chart(df_all.set_index("Datetime")["PUN"])
             
             if df_all["mae_rolling"].iloc[-1] > 10  or df_all['error_abs_perc'].mean() >15:
                 st.error("🚨 Concept drift rilevato → retraining consigliato")
