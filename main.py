@@ -360,6 +360,8 @@ def pipeline_run():
     df_old = df_old[~df_old.index.isin(df_new["Datetime"])]  
     df_old.reset_index(inplace=True)
 
+    st.dataframe(df_old)
+    st.dataframe(df_new)
     df_final = pd.concat([df_old, df_new],axis = 0, ignore_index=True)
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
     df_final.set_index("Datetime", inplace=True)
