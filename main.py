@@ -35,18 +35,13 @@ st.title("⚡ PUN Dataset Manager")
 st.caption("Aggiornamento dataset intraday PUN / Meteo / Terna")
 import dropbox
 
-dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
-
-res = dbx.files_list_folder("")
-st.write([f.name for f in res.entries])
-
 # =========================================================
 # PATH CONFIG
 # =========================================================
 HISTORICAL_PATH = "dati_input/final_dataset_historical.parquet"
 OUTPUT_PATH = "dati_output/final_dataset_intra_day.parquet"
 PUN_INPUT_PATH = "dati_input/Add_on_PUN.xlsx"
-
+DROPBOX_HIST_URL = "https://www.dropbox.com/scl/fi/dwrldp7l3wvpj6hodk203/dataset_history.parquet?rlkey=mc22rqk5avvw9sxqs3h4pdel3&st=25j8lgry&dl=1"
 
 # =========================================================
 # CONSTANTS
@@ -283,7 +278,7 @@ def pipeline_run():
 
     # storico  
     df_historical = load_from_dropbox(
-      "/PUN Forecast/forecast_pun/dataset_history.parquet",
+      DROPBOX_HIST_URL,
       st.secrets["DROPBOX_TOKEN"]
         ).copy()
 
@@ -451,7 +446,7 @@ try:
     # da cancellare
     
     df_historical = load_from_dropbox(
-        "/PUN Forecast/forecast_pun/dataset_history.parquet",
+        DROPBOX_HIST_URL,
         st.secrets["DROPBOX_TOKEN"]
     )
 
@@ -575,7 +570,7 @@ st.subheader("📦 Preview DB aggiornato")
 
 try:
     df_output = load_from_dropbox(
-        "/PUN Forecast/forecast_pun/dataset_history.parquet",
+        DROPBOX_HIST_URL,
         st.secrets["DROPBOX_TOKEN"]
     )
 
@@ -670,7 +665,7 @@ st.write(f'Varibaili esogene aggiornate✅')
 #
 try:
     df_hist = load_from_dropbox(
-        "/PUN Forecast/forecast_pun/dataset_history.parquet",
+        DROPBOX_HIST_URL,
         st.secrets["DROPBOX_TOKEN"]
     )
 
