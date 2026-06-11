@@ -825,9 +825,30 @@ if uploaded_file is not None:
             # 9. ALERT
             # ==============================================
             df_all['error_abs_perc'] = np.abs(df_all['pred']-df_all['PUN'])/df_all['PUN']
-            st.line_chart(df_all.set_index("Datetime")["pred"])
-            st.line_chart(df_all.set_index("Datetime")["PUN"])
             
+            df_all["hour"] = df_all["Datetime"].dt.hour
+            fig = px.box(df_all, x="hour",y="error",    title="Errore per ora del giorno")
+            st.plotly_chart(fig)
+            fig = go.Figure()
+            fig.add_trace(
+              go.Scatter(
+              x=df_all["Datetime"],
+              y=df_all["PUN"],
+              mode="lines",
+              name="PUN reale",
+              line=dict(color="blue")
+              ))
+
+            fig.add_trace(
+              go.Scatter(
+              x=df_all["Datetime"],
+              y=df_all["pred"],
+              mode="lines",
+              name="Forecast",
+              line=dict(color="red")))
+
+            st.plotly_chart(fig, use_container_width=True)
+                        
             if df_all["mae_rolling"].iloc[-1] > 10  or df_all['error_abs_perc'].mean() >15:
                 st.error("🚨 Concept drift rilevato → retraining consigliato")
             else:
