@@ -1337,8 +1337,9 @@ def load_dataset_history_from_supabase(supabase):
 
     return df
 
-def upload_to_dropbox(local_path, dropbox_path):
-    dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+
+def upload_to_dropbox(local_path, dropbox_path, token):
+    dbx = dropbox.Dropbox(token)
 
     with open(local_path, "rb") as f:
         dbx.files_upload(
@@ -1346,6 +1347,5 @@ def upload_to_dropbox(local_path, dropbox_path):
             dropbox_path,
             mode=dropbox.files.WriteMode.overwrite
         )
-
 
 
