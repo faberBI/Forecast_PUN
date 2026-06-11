@@ -825,7 +825,7 @@ if uploaded_file is not None:
             # 9. ALERT
             # ==============================================
             df_all['error_abs_perc'] = np.abs(df_all['pred']-df_all['PUN'])/df_all['PUN']
-            
+            import plotly.express as px
             df_all["hour"] = df_all["Datetime"].dt.hour
             fig = px.box(df_all, x="hour",y="error",    title="Errore per ora del giorno")
             st.plotly_chart(fig)
