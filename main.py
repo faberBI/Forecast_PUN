@@ -128,16 +128,31 @@ def aggregate_meteo(df: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_meteo(meteo, start_date_meteo: str, end_date_meteo: str) -> pd.DataFrame:
     df = meteo.download_multi_city(LOCATIONS, start_date_meteo, end_date_meteo)
+
     df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.floor("h")
     df = df.groupby("Datetime").mean(numeric_only=True).reset_index()
-    return aggregate_meteo(df)
+    df = aggregate_meteo(df)
 
+    # resample a 15 minuti
+    df = (
+        df.set_index("Datetime")
+          .sort_index()
+          .resample("15min")
+          .ffill()
+          .reset_index()
+    )
+
+    return df
 
 def prepare_pun(pun_fe, pun_path: str) -> pd.DataFrame:
     raw = pd.read_excel(pun_path)
     df = pun_fe.prepare_dataset(raw, merge_commodities=True)
-    df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.floor("h")
+
+    # IL PUN è già quarter-hour: NON arrotondare all'ora
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+
     return df
+
 
 
 def prepare_terna(terna, start, end):
@@ -157,7 +172,6 @@ def prepare_terna(terna, start, end):
         columns={"actual_generation_MW": "hydro_generation_MW"}
     )
 
-    # LOGICA ORIGINALE: niente get_forecast_load separato
     df = load.merge(market, on="date", how="outer")
     df = terna.safe_merge(df, wind, "wind")
     df = terna.safe_merge(df, solar, "solar")
@@ -165,7 +179,6 @@ def prepare_terna(terna, start, end):
 
     df = terna.clean_terna_features(df)
 
-    # coercizione robusta ai numerici
     numeric_cols = [
         "total_load_MW",
         "market_load_MW",
@@ -182,19 +195,32 @@ def prepare_terna(terna, start, end):
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["Datetime"] = pd.to_datetime(df["date"])
+
+    # resample a 15 minuti
+    df = (
+        df.set_index("Datetime")
+          .sort_index()
+          .resample("15min")
+          .ffill()
+          .reset_index()
+    )
+
     return df
 
 
 def merge_all(pun_df: pd.DataFrame, meteo_df: pd.DataFrame, terna_df: pd.DataFrame) -> pd.DataFrame:
-    df = pd.merge_asof(
-        pun_df.sort_values("Datetime"),
-        meteo_df.sort_values("Datetime"),
+    df = pun_df.merge(
+        meteo_df,
         on="Datetime",
-        direction="backward",
-        tolerance=pd.Timedelta("90min"),
+        how="left"
     )
 
-    df = df.merge(terna_df, on="Datetime", how="left")
+    df = df.merge(
+        terna_df,
+        on="Datetime",
+        how="left"
+    )
+
     return df
 
 
@@ -293,7 +319,20 @@ def pipeline_run():
     meteo = MeteoDownloader()
 
     log("Preparazione PUN...")
-    pun_df = prepare_pun(pun_fe, PUN_INPUT_PATH)
+    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)
+
+    # PUN storico
+    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
+
+    # concat storico + nuovi dati PUN
+    pun_all = pd.concat([pun_hist, pun_df_new], ignore_index=True)
+    pun_all = pun_all.drop_duplicates(subset=["Datetime"], keep="last")
+    pun_all = pun_all.sort_values("Datetime")
+
+    # ricalcolo feature PUN usando finestra completa
+    pun_fe_full = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
+    pun_df = pun_fe_full.prepare_dataset(pun_all, merge_commodities=True)
+    pun_df["Datetime"] = pd.to_datetime(pun_df["Datetime"])
 
     log("Preparazione Meteo...")
     meteo_df = prepare_meteo(meteo, START_DATE_METEO, END_DATE_METEO)
@@ -320,9 +359,6 @@ def pipeline_run():
 
     log("Feature engineering...")
     df_new = add_features(df_new_raw)
-
-    log("Quarter-hour expansion...")
-    df_new = make_quarter_hour(df_new)
 
     # pulizia colonne inutili
     df_new.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
@@ -352,13 +388,12 @@ def pipeline_run():
     validate_required_columns(df_new, FEATURES_NEW, "df new pipeline")
 
     # storico già pronto
-    df_old = df_historical[FEATURES_OLD].copy()
-    df_old = df_old.reset_index()
+    df_old = df_historical[FEATURES_OLD].copy().reset_index()
 
     # nuove righe già pronte
     df_new = df_new[FEATURES_NEW].copy()
 
-    # concat finale pulito
+    # concat finale
     df_final = pd.concat([df_old, df_new], axis=0, ignore_index=True)
     df_final = df_final.drop_duplicates(subset=["Datetime"], keep="last")
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
@@ -378,7 +413,6 @@ def pipeline_run():
     log("Salvato dataset su Dropbox ✅")
 
     return df_final, log_lines
-
 
 # =========================================================
 # UI - STATUS
@@ -594,7 +628,7 @@ st.write(f'Modello aggiornato caricato ✅')
 selected_exog = model_base.exog_names_in_
 
 st.write(f'Varibaili esogene aggiornate✅')
-
+#
 if os.path.exists(OUTPUT_PATH):
     df_hist = pd.read_parquet(OUTPUT_PATH)
 
@@ -608,14 +642,7 @@ if os.path.exists(OUTPUT_PATH):
 else:
     st.warning("⚠️ Dataset non ancora creato → esegui prima aggiornamento")
     st.stop()
-
-if not isinstance(df_hist.index, pd.DatetimeIndex):
-    df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
-    df_hist = df_hist.set_index("Datetime")
-
-df_hist = df_hist.sort_index()
-df_hist = df_hist.asfreq("15min").ffill()
-
+#
 
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 FORECAST_PATH = "dati_output/forecast_history.parquet"
@@ -657,8 +684,11 @@ if run_forecast:
     # salva
     df_all.to_parquet(FORECAST_PATH)
     upload_to_dropbox(
-    FORECAST_PATH,
-    "/forecast_pun/forecast_history.parquet")
+      FORECAST_PATH,
+      "/forecast_pun/forecast_history.parquet",
+      st.secrets["DROPBOX_TOKEN"]
+      )
+
     st.success("✅ Salvato su Dropbox")
 
     # log UI
@@ -754,7 +784,8 @@ if uploaded_file is not None:
             df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
             df_all = df_all.sort_values("Datetime")
             df_all.to_parquet(ERROR_PATH)
-            upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet")  
+            upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet", st.secrets["DROPBOX_TOKEN"])
+
             st.success("✅ Error history aggiornato")
 
             # ==============================================
