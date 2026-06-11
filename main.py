@@ -280,7 +280,7 @@ def pipeline_run():
     # storico  
     df_historical = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"])
+        st.secrets["DROPBOX_TOKEN"]).copy()
 
     if not isinstance(df_historical.index, pd.DatetimeIndex):
       df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
@@ -447,7 +447,7 @@ try:
     
     df_historical = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"])
+        st.secrets["DROPBOX_TOKEN"]).copy()
 
     if not isinstance(df_historical.index, pd.DatetimeIndex):
         df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
@@ -570,7 +570,7 @@ st.subheader("📦 Preview DB aggiornato")
 try:
     df_output = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"])
+        st.secrets["DROPBOX_TOKEN"]).copy()
 
     if not isinstance(df_output.index, pd.DatetimeIndex):
         df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
@@ -664,7 +664,7 @@ st.write(f'Varibaili esogene aggiornate✅')
 try:
     df_hist = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"])
+        st.secrets["DROPBOX_TOKEN"]).copy()
 
     if not isinstance(df_hist.index, pd.DatetimeIndex):
         df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
