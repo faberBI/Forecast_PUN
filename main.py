@@ -307,7 +307,7 @@ def pipeline_run():
     pun_fe = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
     meteo = MeteoDownloader()
     #
-    log("Preparazione PUN...")log("Preparazione# 1️⃣ storico già con PUN (15min)
+    log("Preparazione PUN...")
     pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
 
     # 2️⃣ nuovi dati PUN (da Excel → già feature engineering completo)
