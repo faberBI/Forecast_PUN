@@ -41,7 +41,7 @@ import dropbox
 HISTORICAL_PATH = "dati_input/final_dataset_historical.parquet"
 OUTPUT_PATH = "dati_output/final_dataset_intra_day.parquet"
 PUN_INPUT_PATH = "dati_input/Add_on_PUN.xlsx"
-DROPBOX_HIST_URL = "/dataset_history.parquet"
+DROPBOX_HIST_URL = "/PUN Forecast/forecast_pun/dataset_history.parquet"
 
 
 # =========================================================
