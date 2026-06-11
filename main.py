@@ -266,26 +266,28 @@ def pipeline_run():
     last_date = df_historical.index.max()
 
     # =========================================================
-    # DATE SETUP
+    # LOOKBACK per feature tipo lag_7d / pun_ret_7d / momentum_1d
     # =========================================================
+    LOOKBACK_DAYS = 8  # 7 giorni + margine
+    lookback_start_dt = pd.Timestamp(last_date).floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
     end_date_dt = pd.Timestamp(today)
-    start_date_dt = last_date
 
-    START_DATE_METEO = start_date_dt.strftime("%Y-%m-%d")
+    START_DATE_METEO = lookback_start_dt.strftime("%Y-%m-%d")
     END_DATE_METEO = end_date_dt.strftime("%Y-%m-%d")
 
-    START_DATE_TERNA = start_date_dt.strftime("%d/%m/%Y")
+    START_DATE_TERNA = lookback_start_dt.strftime("%d/%m/%Y")
     END_DATE_TERNA = end_date_dt.strftime("%d/%m/%Y")
 
-    START_DATE_PUN = start_date_dt.strftime("%Y-%m-%d")
+    START_DATE_PUN = lookback_start_dt.strftime("%Y-%m-%d")
 
     log(f"Ultima data storico: {last_date}")
+    log(f"Lookback start: {lookback_start_dt}")
     log(f"Download Meteo da {START_DATE_METEO} a {END_DATE_METEO}")
     log(f"Download Terna da {START_DATE_TERNA} a {END_DATE_TERNA}")
     log(f"Start PUN: {START_DATE_PUN}")
 
     # =========================================================
-    # PIPELINE
+    # PIPELINE NUOVI DATI (CON LOOKBACK)
     # =========================================================
     pun_fe = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
     meteo = MeteoDownloader()
@@ -296,7 +298,6 @@ def pipeline_run():
     log("Preparazione Meteo...")
     meteo_df = prepare_meteo(meteo, START_DATE_METEO, END_DATE_METEO)
 
-    # meglio usare secrets o env in produzione
     terna_client_id = st.secrets.get("TERNA_CLIENT_ID", os.getenv("TERNA_CLIENT_ID", ""))
     terna_client_secret = st.secrets.get("TERNA_CLIENT_SECRET", os.getenv("TERNA_CLIENT_SECRET", ""))
 
@@ -315,19 +316,26 @@ def pipeline_run():
     terna_df = shift_terna_only(terna_df, shift_steps=1)
 
     log("Merge dataset...")
-    df = merge_all(pun_df, meteo_df, terna_df)
+    df_new_raw = merge_all(pun_df, meteo_df, terna_df)
 
     log("Feature engineering...")
-    df = add_features(df)
+    df_new = add_features(df_new_raw)
 
     log("Quarter-hour expansion...")
-    df = make_quarter_hour(df)
+    df_new = make_quarter_hour(df_new)
 
-    df.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
-    df = df.reset_index(drop=True)
+    # pulizia colonne inutili
+    df_new.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
+    df_new = df_new.reset_index(drop=True)
 
-    missing = [c for c in FEATURES_NEW if c not in df.columns]
-    extra = [c for c in df.columns if c not in FEATURES_NEW]
+    # =========================================================
+    # TIENI SOLO LE RIGHE DAVVERO NUOVE
+    # =========================================================
+    df_new["Datetime"] = pd.to_datetime(df_new["Datetime"])
+    df_new = df_new[df_new["Datetime"] > last_date].copy()
+
+    missing = [c for c in FEATURES_NEW if c not in df_new.columns]
+    extra = [c for c in df_new.columns if c not in FEATURES_NEW]
 
     if missing:
         st.error(f"❌ Feature mancanti: {missing}")
@@ -336,51 +344,40 @@ def pipeline_run():
     if extra:
         st.warning(f"⚠️ Feature extra ignorate: {extra}")
 
-    # =========================================================
-    # FEATURE ALIGNMENT - FEDELE AL CODICE ORIGINALE
-    # =========================================================
-    validate_required_columns(df_historical.reset_index(), ["Datetime"] + FEATURES_OLD, "df_historical.reset_index()")
-    validate_required_columns(df, FEATURES_NEW, "df new pipeline")
+    validate_required_columns(
+        df_historical.reset_index(),
+        ["Datetime"] + FEATURES_OLD,
+        "df_historical.reset_index()"
+    )
+    validate_required_columns(df_new, FEATURES_NEW, "df new pipeline")
 
+    # storico già pronto
     df_old = df_historical[FEATURES_OLD].copy()
-    
-    # unisci prima storico + nuovo GREZZO
-    df_old_full = df_historical.reset_index()
-    df = pd.concat([df_old_full, df], ignore_index=True)
+    df_old = df_old.reset_index()
 
-    # fai feature engineering su tutto
-    df = add_features(df)
-    df = make_quarter_hour(df)
+    # nuove righe già pronte
+    df_new = df_new[FEATURES_NEW].copy()
 
-    # poi selezioni
-    df_new = df[FEATURES_NEW].copy()
-
-
-    # elimina da df_old tutto ciò che è già presente in df_new per Datetime
-    df_old = df_old[~df_old.index.isin(df_new["Datetime"])]  
-    df_old.reset_index(inplace=True)
-
-    st.dataframe(df_old)
-    st.dataframe(df_new)
-    df_final = pd.concat([df_old, df_new],axis = 0, ignore_index=True)
+    # concat finale pulito
+    df_final = pd.concat([df_old, df_new], axis=0, ignore_index=True)
+    df_final = df_final.drop_duplicates(subset=["Datetime"], keep="last")
     df_final = df_final.sort_values("Datetime").reset_index(drop=True)
     df_final.set_index("Datetime", inplace=True)
 
     log(f"Shape finale: {df_final.shape}")
     log(f"Ultima data finale: {df_final.index.max()}")
 
-    # =========================================================
-    # =========================================================
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
+
     upload_to_dropbox(
-    OUTPUT_PATH,
-    "/forecast_pun/dataset_history.parquet"
+        OUTPUT_PATH,
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]
     )
+    log("Salvato dataset su Dropbox ✅")
 
-    # ✅ SAVE SU SUPABASE (VERSIONE CORRETTA)
     return df_final, log_lines
-
 
 
 # =========================================================
