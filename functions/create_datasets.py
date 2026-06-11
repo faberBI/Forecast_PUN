@@ -1349,3 +1349,14 @@ def upload_to_dropbox(local_path, dropbox_path, token):
         )
 
 
+def load_from_dropbox(dropbox_path, token):
+    dbx = dropbox.Dropbox(token)
+
+    metadata, res = dbx.files_download(dropbox_path)
+
+    file_bytes = io.BytesIO(res.content)
+    df = pd.read_parquet(file_bytes)
+
+    return df
+
+
