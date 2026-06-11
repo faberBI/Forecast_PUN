@@ -306,14 +306,42 @@ def pipeline_run():
     # =========================================================
     pun_fe = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
     meteo = MeteoDownloader()
-
-    log("Preparazione PUN...")
     #
-    # nuovi dati PUN (già con feature engineering completo)
+    log("Preparazione PUN...")log("Preparazione# 1️⃣ storico già con PUN (15min)
+    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
 
-    pun_df = prepare_pun(pun_fe, PUN_INPUT_PATH)
+    # 2️⃣ nuovi dati PUN (da Excel → già feature engineering completo)
+    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)
 
-    pun_df["Datetime"] = pd.to_datetime(pun_df["Datetime"])
+    # 3️⃣ prendi solo colonne raw PUN
+    pun_df_new = pun_df_new[["Datetime", "PUN"]].copy()
+
+    # 4️⃣ concat tutto
+    pun_full = pd.concat([pun_hist, pun_df_new], ignore_index=True)
+
+    pun_full = (
+      pun_full
+      .drop_duplicates(subset=["Datetime"], keep="last")
+      .sort_values("Datetime")
+      )
+
+    # 5️⃣ ora calcoli i lag DIRETTAMENTE qui (molto più semplice)
+    pun_full = pun_full.sort_values("Datetime")
+
+    pun_full["lag_2d"] = pun_full["PUN"].shift(96*2)
+    pun_full["lag_7d"] = pun_full["PUN"].shift(96*7)
+
+    pun_full["pun_ret_1d"] = pun_full["PUN"].pct_change(96).shift(1)
+    pun_full["pun_ret_7d"] = pun_full["PUN"].pct_change(96*7).shift(1)
+
+    pun_full["momentum_1d"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(96)
+
+
+    # 6️⃣ tieni solo la parte nuova
+    pun_full["Datetime"] = pd.to_datetime(pun_full["Datetime"])
+
+    pun_df = pun_full[pun_full["Datetime"] >= lookback_start_dt].copy()
+    #
 
     log("Preparazione Meteo...")
     meteo_df = prepare_meteo(meteo, START_DATE_METEO, END_DATE_METEO)
