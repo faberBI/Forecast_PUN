@@ -1350,11 +1350,28 @@ def upload_to_dropbox(local_path, dropbox_path, token):
 
 
 def load_from_dropbox(dropbox_path, token):
+    import dropbox
+    import io
+    import pandas as pd
+
     dbx = dropbox.Dropbox(token)
 
-    metadata, res = dbx.files_download(dropbox_path)
+    try:
+        metadata = dbx.files_get_metadata(dropbox_path)
+    except Exception as e:
+        raise RuntimeError(f"files_get_metadata FALLITA per path={dropbox_path}: {type(e).__name__}: {e}")
 
-    return pd.read_parquet(io.BytesIO(res.content))
+    try:
+        _, res = dbx.files_download(dropbox_path)
+    except Exception as e:
+        raise RuntimeError(f"files_download FALLITA per path={dropbox_path}: {type(e).__name__}: {e}")
+
+    try:
+        df = pd.read_parquet(io.BytesIO(res.content))
+    except Exception as e:
+        raise RuntimeError(f"read_parquet FALLITA per path={dropbox_path}: {type(e).__name__}: {e}")
+
+    return df
 
 
 
