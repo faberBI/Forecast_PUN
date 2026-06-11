@@ -442,36 +442,27 @@ def pipeline_run():
 # UI - STATUS
 # =========================================================
 col1, col2 = st.columns(2)
-
 try:
-    df_historical = load_historical(HISTORICAL_PATH)
-    last_hist_date = df_historical.index.max()
-    with col1:
-        st.metric("📅 Ultima data DB storico", str(last_hist_date))
-except Exception as e:
-    with col1:
-        st.error(f"Errore lettura storico: {e}")
-    df_historical = None
-
-try:
-    df_output = load_from_dropbox(
+    df_historical = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     )
 
-    if not isinstance(df_output.index, pd.DatetimeIndex):
-        df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
-        df_output = df_output.set_index("Datetime")
+    if not isinstance(df_historical.index, pd.DatetimeIndex):
+        df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
+        df_historical = df_historical.set_index("Datetime")
 
-    df_output = df_output.sort_index()
+    df_historical = df_historical.sort_index()
 
-    with col2:
-        st.metric("🆕 Ultima data DB aggiornato", str(df_output.index.max()))
+    last_hist_date = df_historical.index.max()
+
+    with col1:
+        st.metric("📅 Ultima data DB storico", str(last_hist_date))
 
 except Exception as e:
-    with col2:
+    with col1:
         st.warning("⚠️ Dropbox non disponibile")
-        st.metric("🆕 Ultima data DB aggiornato", "non disponibile")
+        st.metric("📅 Ultima data DB storico", "non disponibile")
 
 
 
@@ -575,14 +566,22 @@ if df_historical is not None:
 
 st.subheader("📦 Preview DB aggiornato")
 
-df_output = load_output_if_exists(OUTPUT_PATH)
+try:
+    df_output = load_from_dropbox(
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]
+    )
 
-if df_output is not None:
+    if not isinstance(df_output.index, pd.DatetimeIndex):
+        df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
+        df_output = df_output.set_index("Datetime")
+
+    df_output = df_output.sort_index()
+
     st.dataframe(df_output.tail(50), use_container_width=True)
-else:
-    st.warning("⚠️ Nessun dato presente nel file parquet")
 
-
+except:
+    st.warning("⚠️ Nessun dato disponibile su Dropbox")
 
 from pathlib import Path
 import gdown
@@ -662,19 +661,20 @@ selected_exog = model_base.exog_names_in_
 
 st.write(f'Varibaili esogene aggiornate✅')
 #
-if os.path.exists(OUTPUT_PATH):
+try:
     df_hist = load_from_dropbox(
-    "/forecast_pun/dataset_history.parquet",
-    st.secrets["DROPBOX_TOKEN"])
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]
+    )
+
     if not isinstance(df_hist.index, pd.DatetimeIndex):
         df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
         df_hist = df_hist.set_index("Datetime")
 
-    df_hist = df_hist.sort_index()
-    df_hist = df_hist.asfreq("15min").ffill()
+    df_hist = df_hist.sort_index().asfreq("15min").ffill()
 
-else:
-    st.warning("⚠️ Dataset non ancora creato → esegui prima aggiornamento")
+except:
+    st.warning("⚠️ Dataset non disponibile su Dropbox")
     st.stop()
 #
 
