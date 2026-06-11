@@ -41,7 +41,7 @@ import dropbox
 HISTORICAL_PATH = "dati_input/final_dataset_historical.parquet"
 OUTPUT_PATH = "dati_output/final_dataset_intra_day.parquet"
 PUN_INPUT_PATH = "dati_input/Add_on_PUN.xlsx"
-DROPBOX_HIST_URL = "/PUN Forecast/forecast_pun/dataset_history.parquet"
+
 
 
 # =========================================================
@@ -279,9 +279,8 @@ def pipeline_run():
 
     # storico  
     df_historical = load_from_dropbox(
-      DROPBOX_HIST_URL,
-      st.secrets["DROPBOX_TOKEN"]
-        ).copy()
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"])
 
     if not isinstance(df_historical.index, pd.DatetimeIndex):
       df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
@@ -447,9 +446,8 @@ try:
     # da cancellare
     
     df_historical = load_from_dropbox(
-        DROPBOX_HIST_URL,
-        st.secrets["DROPBOX_TOKEN"]
-    )
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"])
 
     if not isinstance(df_historical.index, pd.DatetimeIndex):
         df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
@@ -571,9 +569,8 @@ st.subheader("📦 Preview DB aggiornato")
 
 try:
     df_output = load_from_dropbox(
-        DROPBOX_HIST_URL,
-        st.secrets["DROPBOX_TOKEN"]
-    )
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"])
 
     if not isinstance(df_output.index, pd.DatetimeIndex):
         df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
@@ -666,9 +663,8 @@ st.write(f'Varibaili esogene aggiornate✅')
 #
 try:
     df_hist = load_from_dropbox(
-        DROPBOX_HIST_URL,
-        st.secrets["DROPBOX_TOKEN"]
-    )
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"])
 
     if not isinstance(df_hist.index, pd.DatetimeIndex):
         df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
