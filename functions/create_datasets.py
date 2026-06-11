@@ -1349,15 +1349,12 @@ def upload_to_dropbox(local_path, dropbox_path, token):
         )
 
 
-def load_from_dropbox(url: str) -> pd.DataFrame:
-    df = pd.read_parquet(url)
+def load_from_dropbox(dropbox_path, token):
+    dbx = dropbox.Dropbox(token)
 
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "Datetime" in df.columns:
-            df["Datetime"] = pd.to_datetime(df["Datetime"])
-            df = df.set_index("Datetime")
+    metadata, res = dbx.files_download(dropbox_path)
 
-    df = df.sort_index()
-    return df
+    return pd.read_parquet(io.BytesIO(res.content))
+
 
 
