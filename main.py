@@ -128,12 +128,11 @@ def aggregate_meteo(df: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_meteo(meteo, start_date_meteo: str, end_date_meteo: str) -> pd.DataFrame:
     df = meteo.download_multi_city(LOCATIONS, start_date_meteo, end_date_meteo)
-
     df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.floor("h")
     df = df.groupby("Datetime").mean(numeric_only=True).reset_index()
     df = aggregate_meteo(df)
 
-    # resample a 15 minuti
+    # hourly -> 15min
     df = (
         df.set_index("Datetime")
           .sort_index()
@@ -144,16 +143,15 @@ def prepare_meteo(meteo, start_date_meteo: str, end_date_meteo: str) -> pd.DataF
 
     return df
 
+
 def prepare_pun(pun_fe, pun_path: str) -> pd.DataFrame:
     raw = pd.read_excel(pun_path)
     df = pun_fe.prepare_dataset(raw, merge_commodities=True)
 
-    # IL PUN è già quarter-hour: NON arrotondare all'ora
+    # Il PUN è già quarter-hour tramite Data/Ora/Periodo
     df["Datetime"] = pd.to_datetime(df["Datetime"])
 
     return df
-
-
 
 def prepare_terna(terna, start, end):
     def clean(df):
@@ -196,7 +194,7 @@ def prepare_terna(terna, start, end):
 
     df["Datetime"] = pd.to_datetime(df["date"])
 
-    # resample a 15 minuti
+    # hourly -> 15min
     df = (
         df.set_index("Datetime")
           .sort_index()
@@ -209,19 +207,10 @@ def prepare_terna(terna, start, end):
 
 
 def merge_all(pun_df: pd.DataFrame, meteo_df: pd.DataFrame, terna_df: pd.DataFrame) -> pd.DataFrame:
-    df = pun_df.merge(
-        meteo_df,
-        on="Datetime",
-        how="left"
-    )
-
-    df = df.merge(
-        terna_df,
-        on="Datetime",
-        how="left"
-    )
-
+    df = pun_df.merge(meteo_df, on="Datetime", how="left")
+    df = df.merge(terna_df, on="Datetime", how="left")
     return df
+
 
 
 
@@ -319,19 +308,11 @@ def pipeline_run():
     meteo = MeteoDownloader()
 
     log("Preparazione PUN...")
-    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)
+    #
+    # nuovi dati PUN (già con feature engineering completo)
 
-    # PUN storico
-    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
+    pun_df = prepare_pun(pun_fe, PUN_INPUT_PATH)
 
-    # concat storico + nuovi dati PUN
-    pun_all = pd.concat([pun_hist, pun_df_new], ignore_index=True)
-    pun_all = pun_all.drop_duplicates(subset=["Datetime"], keep="last")
-    pun_all = pun_all.sort_values("Datetime")
-
-    # ricalcolo feature PUN usando finestra completa
-    pun_fe_full = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
-    pun_df = pun_fe_full.prepare_dataset(pun_all, merge_commodities=True)
     pun_df["Datetime"] = pd.to_datetime(pun_df["Datetime"])
 
     log("Preparazione Meteo...")
