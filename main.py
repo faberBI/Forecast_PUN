@@ -9,7 +9,7 @@ from scipy.stats import ks_2samp
 import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox)
+from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 
 import yaml
@@ -276,10 +276,19 @@ def pipeline_run():
 
     today = date.today()
 
-    # storico
-    df_historical = load_historical(HISTORICAL_PATH).copy()
-    last_date = df_historical.index.max()
+    # storico  
+    df_historical = load_from_dropbox(
+      "/forecast_pun/dataset_history.parquet",
+      st.secrets["DROPBOX_TOKEN"]
+        ).copy()
 
+    if not isinstance(df_historical.index, pd.DatetimeIndex):
+      df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
+      df_historical = df_historical.set_index("Datetime")
+
+    df_historical = df_historical.sort_index().asfreq("15min").ffill()
+
+    last_date = df_historical.index.max()
     # =========================================================
     # LOOKBACK per feature tipo lag_7d / pun_ret_7d / momentum_1d
     # =========================================================
@@ -445,16 +454,25 @@ except Exception as e:
     df_historical = None
 
 try:
-    df_output = load_output_if_exists(OUTPUT_PATH)
-    if df_output is not None:
-        with col2:
-            st.metric("🆕 Ultima data DB aggiornato", str(df_output.index.max()))
-    else:
-        with col2:
-            st.metric("🆕 Ultima data DB aggiornato", "file non presente")
+    df_output = load_from_dropbox(
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]
+    )
+
+    if not isinstance(df_output.index, pd.DatetimeIndex):
+        df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
+        df_output = df_output.set_index("Datetime")
+
+    df_output = df_output.sort_index()
+
+    with col2:
+        st.metric("🆕 Ultima data DB aggiornato", str(df_output.index.max()))
+
 except Exception as e:
     with col2:
-        st.error(f"Errore lettura output: {e}")
+        st.warning("⚠️ Dropbox non disponibile")
+        st.metric("🆕 Ultima data DB aggiornato", "non disponibile")
+
 
 
 st.divider()
@@ -645,8 +663,9 @@ selected_exog = model_base.exog_names_in_
 st.write(f'Varibaili esogene aggiornate✅')
 #
 if os.path.exists(OUTPUT_PATH):
-    df_hist = pd.read_parquet(OUTPUT_PATH)
-
+    df_hist = load_from_dropbox(
+    "/forecast_pun/dataset_history.parquet",
+    st.secrets["DROPBOX_TOKEN"])
     if not isinstance(df_hist.index, pd.DatetimeIndex):
         df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
         df_hist = df_hist.set_index("Datetime")
