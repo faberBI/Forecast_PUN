@@ -343,7 +343,18 @@ def pipeline_run():
     validate_required_columns(df, FEATURES_NEW, "df new pipeline")
 
     df_old = df_historical[FEATURES_OLD].copy()
+    
+    # unisci prima storico + nuovo GREZZO
+    df_old_full = df_historical.reset_index()
+    df = pd.concat([df_old_full, df], ignore_index=True)
+
+    # fai feature engineering su tutto
+    df = add_features(df)
+    df = make_quarter_hour(df)
+
+    # poi selezioni
     df_new = df[FEATURES_NEW].copy()
+
 
     # elimina da df_old tutto ciò che è già presente in df_new per Datetime
     df_old = df_old[~df_old.index.isin(df_new["Datetime"])]  
@@ -585,11 +596,19 @@ selected_exog = model_base.exog_names_in_
 
 st.write(f'Varibaili esogene aggiornate✅')
 
+if os.path.exists(OUTPUT_PATH):
+    df_hist = pd.read_parquet(OUTPUT_PATH)
 
+    if not isinstance(df_hist.index, pd.DatetimeIndex):
+        df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
+        df_hist = df_hist.set_index("Datetime")
 
+    df_hist = df_hist.sort_index()
+    df_hist = df_hist.asfreq("15min").ffill()
 
-
-df_hist = pd.read_parquet(OUTPUT_PATH)
+else:
+    st.warning("⚠️ Dataset non ancora creato → esegui prima aggiornamento")
+    st.stop()
 
 if not isinstance(df_hist.index, pd.DatetimeIndex):
     df_hist["Datetime"] = pd.to_datetime(df_hist["Datetime"])
