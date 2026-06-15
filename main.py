@@ -876,12 +876,12 @@ if uploaded_file is not None:
             #        
             mape_mean = df_all['error_abs_perc'].mean() * 100  # in %
             st.write(f"MAPE medio: {mape_mean:.2f}%")
-            if mape_mean > 15:
+            if mape_mean > 20:
               st.error("🚨 Concept drift forte → retraining urgente")
-            elif mape_mean > 12:
+            elif mape_mean > 15:
               st.warning("⚠️ Performance degradata → monitoring stretto (retraining consigliato ma non urgente)")
             elif mape_mean > 10:
-              st.info("🟡 Buone performance (range 10–12%) → modello stabile ma migliorabile")
+              st.info("🟡 Buone performance (range 10–15%) → modello stabile ma migliorabile")
             else:
               st.success("✅ Modello calibrato perfettamente (<10%)")
             # ==============================================
