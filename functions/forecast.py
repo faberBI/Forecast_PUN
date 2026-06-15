@@ -156,12 +156,9 @@ def pun_to_datetime(df):
     df = df.copy()
 
     df["Data"] = pd.to_datetime(df["Data"], dayfirst=True)
-
-    # minuto da periodo
-    df["Minute"] = (df["Periodo"] - 1) * 15
-
+    # ✅ usa solo Periodo (1..96)
     df["Datetime"] = df["Data"] + pd.to_timedelta(
-        (df["Ora"] - 1) * 60 + df["Minute"],
+        (df["Periodo"] - 1) * 15,
         unit="m"
     )
 
@@ -170,7 +167,7 @@ def pun_to_datetime(df):
     df = df.set_index("Datetime").sort_index()
 
     return df
-
+``
 
 import plotly.graph_objects as go
 import pandas as pd
