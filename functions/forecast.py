@@ -1,7 +1,30 @@
-
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+
+def download_models_from_dropbox(dropbox_token: str):
+    dbx = dropbox.Dropbox(dropbox_token)
+
+    files = [
+        "model_prod.pkl",
+        "local_cfg_prod.pkl",
+        "selected_exog.pkl",
+        "residual_feature_cols.pkl",
+    ]
+
+    for f in files:
+        dbx_path = f"{DROPBOX_MODELS_BASE_PATH}/{f}"
+        local_path = MODEL_DIR / f
+
+        try:
+            metadata, res = dbx.files_download(dbx_path)
+            with open(local_path, "wb") as file:
+                file.write(res.content)
+
+            st.info(f"✅ Download {f}")
+
+        except Exception as e:
+            st.warning(f"⚠️ Skip {f}: {e}")
 
 
 def forecast_day_ahead_96_base(
