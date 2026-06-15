@@ -629,23 +629,25 @@ import gdown
 
 @st.cache_resource
 def load_model_from_dropbox():
-
     token = st.secrets["DROPBOX_TOKEN"]
 
     st.info("📥 Download modelli da Dropbox...")
-    download_models_from_dropbox(token)
 
-    model_path = MODEL_DIR / "model_prod.pkl"
+    download_models_from_dropbox(
+        dropbox_token=token,
+        base_path="/forecast_pun/models",
+        local_dir="models"
+    )
+
+    model_path = Path("models") / "model_prod.pkl"
 
     if not model_path.exists():
-        raise RuntimeError("❌ model_prod.pkl non trovato dopo download")
+        raise RuntimeError("❌ model_prod.pkl non trovato")
 
     model = joblib.load(model_path)
-
-    selected_exog = joblib.load(MODEL_DIR / "selected_exog.pkl")
+    selected_exog = joblib.load(Path("models") / "selected_exog.pkl")
 
     return model, selected_exog
-
 # ✅ USO
 
 model_base, selected_exog = load_model_from_dropbox()
