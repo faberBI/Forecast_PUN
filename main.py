@@ -788,10 +788,15 @@ if uploaded_file is not None:
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
         st.info(f"Forecast caricati: {len(df_forecast)} righe")
+        # limite sui reali disponibili
+        max_real_dt = df_real["Datetime"].max()
+        # uso SOLO forecast "maturi"
+        df_forecast_eval = df_forecast[df_forecast["Datetime"] <= max_real_dt].copy()
+
         # =================================================
         # 4. MERGE
         # =================================================
-        df_eval = df_forecast.merge(
+        df_eval = df_forecast_eval.merge(
                 df_real,
                 on="Datetime",
                 how="inner"
