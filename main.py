@@ -634,10 +634,9 @@ def load_model_from_dropbox():
     st.info("📥 Download modelli da Dropbox...")
 
     download_models_from_dropbox(
-        dropbox_token=token,
-        base_path="/forecast_pun/models",
-        local_dir="models"
-    )
+      dropbox_token=token,
+      base_path=DROPBOX_MODELS_BASE_PATH,
+      local_dir=MODEL_DIR)
 
     model_path = Path("models") / "model_prod.pkl"
 
