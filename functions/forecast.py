@@ -151,24 +151,27 @@ def forecast_day_ahead_96_base(
 
     return out
 
-def pun_to_datetime(df):
+def pun_to_datetime(df_pun_excel: pd.DataFrame) -> pd.DataFrame:
+    df = df_pun_excel.copy()
 
-    df = df.copy()
+    # Data seriale Excel -> datetime
+    df["Data"] = pd.to_datetime(df["Data"], unit="D", origin="1899-12-30").dt.normalize()
 
-    df["Data"] = pd.to_datetime(df["Data"], dayfirst=True)
+    # sicurezza tipi
+    df["Periodo"] = pd.to_numeric(df["Periodo"], errors="coerce").astype("Int64")
+    df["PUN"] = pd.to_numeric(df["PUN"], errors="coerce")
 
-    # minuto da periodo
-    df["Minute"] = (df["Periodo"] - 1) * 15
+    # timestamp robusto: usa il quarter, non l'ora
+    df["Datetime"] = df["Data"] + pd.to_timedelta((df["Periodo"] - 1) * 15, unit="m")
 
-    df["Datetime"] = df["Data"] + pd.to_timedelta(
-        (df["Ora"] - 1) * 60 + df["Minute"],
-        unit="m"
+    # output pulito
+    df = (
+        df[["Datetime", "PUN", "Ora", "Periodo"]]
+        .dropna(subset=["Datetime", "PUN"])
+        .sort_values("Datetime")
+        .drop_duplicates(subset=["Datetime"], keep="last")
+        .reset_index(drop=True)
     )
-
-    df = df[["Datetime", "PUN"]]
-
-    df = df.set_index("Datetime").sort_index()
-
     return df
 
 
