@@ -873,11 +873,17 @@ if uploaded_file is not None:
               line=dict(color="red")))
 
             st.plotly_chart(fig, use_container_width=True)
-                        
-            if df_all["mae_rolling"].iloc[-1] > 10  or df_all['error_abs_perc'].mean() >15:
-                st.error("🚨 Concept drift rilevato → retraining consigliato")
+            #        
+            mape_mean = df_all['error_abs_perc'].mean() * 100  # in %
+            st.write(f"MAPE medio: {mape_mean:.2f}%")
+            if mape_mean > 15:
+              st.error("🚨 Concept drift forte → retraining urgente")
+            elif mape_mean > 12:
+              st.warning("⚠️ Performance degradata → monitoring stretto (retraining consigliato ma non urgente)")
+            elif mape_mean > 10:
+              st.info("🟡 Buone performance (range 10–12%) → modello stabile ma migliorabile")
             else:
-                st.success("✅ Modello stabile")
+              st.success("✅ Modello calibrato perfettamente (<10%)")
             # ==============================================
             # 10. DOWNLOAD
             # ==============================================
