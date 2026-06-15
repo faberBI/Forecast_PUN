@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
-from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun, download_models_from_dropbox)
+from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun, download_models_from_dropbox, forecast_day_ahead_96_full_production)
 
 import yaml
 import dropbox
@@ -629,26 +629,26 @@ import gdown
 def load_model_from_dropbox():
     token = st.secrets["DROPBOX_TOKEN"]
 
-    st.info("📥 Download modelli da Dropbox...")
-
     download_models_from_dropbox(
-      dropbox_token=token,
-      base_path=DROPBOX_MODELS_BASE_PATH,
-      local_dir=MODEL_DIR)
+        dropbox_token=token,
+        base_path=DROPBOX_MODELS_BASE_PATH,
+        local_dir=MODEL_DIR
+    )
 
-    model_path = Path("models") / "model_prod.pkl"
+    return {
+        "model_prod": joblib.load(MODEL_DIR / "model_prod.pkl"),
+        "local_cfg_prod": joblib.load(MODEL_DIR / "local_cfg_prod.pkl"),
+        "selected_exog": joblib.load(MODEL_DIR / "selected_exog.pkl"),
+        "residual_feature_cols": joblib.load(MODEL_DIR / "residual_feature_cols.pkl"),
+    }# ✅ USO
 
-    if not model_path.exists():
-        raise RuntimeError("❌ model_prod.pkl non trovato")
+artifacts = load_model_from_dropbox()
 
-    model = joblib.load(model_path)
-    selected_exog = joblib.load(Path("models") / "selected_exog.pkl")
+model_base = artifacts["model_prod"]
+selected_exog = artifacts["selected_exog"]
+local_cfg_prod = artifacts["local_cfg_prod"]
+residual_feature_cols = artifacts["residual_feature_cols"]
 
-    return model, selected_exog
-# ✅ USO
-
-model_base, selected_exog = load_model_from_dropbox()
-st.write(type(model_base))
 
 st.success("✅ Modello caricato da Dropbox")
 st.write("✅ Variabili esogene:", selected_exog[:10])
@@ -673,16 +673,18 @@ run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=T
 FORECAST_PATH = "dati_output/forecast_history.parquet"
 
 if run_forecast:
-
-    preds = forecast_day_ahead_96_base(
-        df_hist=df_hist,
-        best_forecaster=model_base,
-        meteo_downloader=MeteoDownloader(),
-        locations=LOCATIONS,
-        selected_exog=selected_exog,
-        steps=96
-    )
-
+    #
+    preds = forecast_day_ahead_96_full_production(
+    df_hist=df_hist,
+    model_prod=model_base,
+    local_cfg_prod=local_cfg_prod,
+    residual_feature_cols=residual_feature_cols,
+    meteo_downloader=MeteoDownloader(),
+    locations=LOCATIONS,
+    selected_exog=selected_exog,
+    steps=96,
+    warmup_steps=96 * 7)
+  
     st.success("✅ Forecast completato")
     
     # ==========================================
