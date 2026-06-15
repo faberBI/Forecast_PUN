@@ -158,17 +158,32 @@ def forecast_day_ahead_96_base(
 def pun_to_datetime(df_pun_excel: pd.DataFrame) -> pd.DataFrame:
     df = df_pun_excel.copy()
 
-    # Data seriale Excel -> datetime
-    df["Data"] = pd.to_datetime(df["Data"], unit="D", origin="1899-12-30").dt.normalize()
+    # =========================================
+    # 1. CONVERSIONE DATA (robusta)
+    # =========================================
+    if pd.api.types.is_numeric_dtype(df["Data"]):
+        # formato Excel seriale
+        df["Data"] = pd.to_datetime(df["Data"], unit="D", origin="1899-12-30")
+    else:
+        # già datetime o stringa data
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
 
-    # sicurezza tipi
-    df["Periodo"] = pd.to_numeric(df["Periodo"], errors="coerce").astype("Int64")
+    df["Data"] = df["Data"].dt.normalize()
+
+    # =========================================
+    # 2. TIPI SICURI
+    # =========================================
+    df["Periodo"] = pd.to_numeric(df["Periodo"], errors="coerce")
     df["PUN"] = pd.to_numeric(df["PUN"], errors="coerce")
 
-    # timestamp robusto: usa il quarter, non l'ora
+    # =========================================
+    # 3. COSTRUZIONE DATETIME (CORRETTA)
+    # =========================================
     df["Datetime"] = df["Data"] + pd.to_timedelta((df["Periodo"] - 1) * 15, unit="m")
 
-    # output pulito
+    # =========================================
+    # 4. OUTPUT
+    # =========================================
     df = (
         df[["Datetime", "PUN", "Ora", "Periodo"]]
         .dropna(subset=["Datetime", "PUN"])
@@ -176,6 +191,7 @@ def pun_to_datetime(df_pun_excel: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates(subset=["Datetime"], keep="last")
         .reset_index(drop=True)
     )
+
     return df
 
 
