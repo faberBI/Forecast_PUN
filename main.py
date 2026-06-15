@@ -442,6 +442,8 @@ def pipeline_run():
 # UI - STATUS
 # =========================================================
 col1, col2 = st.columns(2)
+df_historical = None
+
 try:
     # da cancellare
     
