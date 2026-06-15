@@ -10,21 +10,11 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
-from functions.forecast import (
-    pun_to_datetime,
-    plot_forecast_pun,
-    download_models_from_dropbox,
-    load_model_artifacts_from_dropbox,
-    forecast_day_ahead_96_full_production,
-)
+from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
+
 import yaml
 import dropbox
-from pathlib import Path
 
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
-
-DROPBOX_MODELS_BASE_PATH = "/forecast_pun/models"
 CONFIG_PATH = "config/config.yaml"
 
 @st.cache_data
@@ -597,27 +587,29 @@ from pathlib import Path
 import gdown
 
 # ===== costanti (stesse del training!)
-PEAK_WEIGHT_BASE    = 2.0
 OFFPEAK_WEIGHT_BASE = 1.0
-MIDDAY_WEIGHT       = 4.0   # 12:00 – 17:00
-EVENING_WEIGHT      = 5.0   # 19:00 – 21:30
+PEAK_WEIGHT_BASE = 1.5
+MIDDAY_WEIGHT = 2.5
+EVENING_WEIGHT = 3.0
 
-# quarter_of_day  (qod = hour*4 + minute//15)
-MIDDAY_QOD  = set(range(48, 69))   # 12:00–17:00 inclusi
-EVENING_QOD = set(range(76, 87))   # 19:00–21:30 inclusi
+MIDDAY_QOD = range(48, 68)
+EVENING_QOD = range(76, 87)
+
 
 def peak_weight_func(index):
-    """Pesi campionari: più alti nei regimi critici."""
-    index   = pd.DatetimeIndex(index)
-    qod     = index.hour * 4 + (index.minute // 15)
+    index = pd.DatetimeIndex(index)
+    qod = index.hour * 4 + (index.minute // 15)
+
     weights = np.full(len(index), OFFPEAK_WEIGHT_BASE, dtype=float)
 
-    weights[np.isin(qod, list(MIDDAY_QOD))]  = MIDDAY_WEIGHT
+    weights[np.isin(qod, list(MIDDAY_QOD))] = MIDDAY_WEIGHT
     weights[np.isin(qod, list(EVENING_QOD))] = EVENING_WEIGHT
 
     daytime_mask = (index.hour >= 8) & (index.hour < 21)
     weights[(weights == OFFPEAK_WEIGHT_BASE) & daytime_mask] = PEAK_WEIGHT_BASE
+
     return weights
+
 
 
 MODEL_DIR = Path("models")
@@ -631,26 +623,44 @@ import joblib
 import gdown
 
 @st.cache_resource
-def load_model_from_dropbox():
-    token = st.secrets["DROPBOX_TOKEN"]
+def load_model_bundle():
 
-    artifacts = load_model_artifacts_from_dropbox(
-        dropbox_token=token,
-        base_path=DROPBOX_MODELS_BASE_PATH,
-        local_dir=MODEL_DIR
-    )
-    return artifacts
-  
-artifacts = load_model_from_dropbox()
-model_base = artifacts["model_prod"]
-selected_exog = artifacts["selected_exog"]
-local_cfg_prod = artifacts["local_cfg_prod"]
-residual_feature_cols = artifacts["residual_feature_cols"]
+    if not FILE_ID:
+        st.error("❌ MODEL_PRODUCTION non configurato nei secrets")
+        raise ValueError("Missing FILE_ID")
+
+    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size == 0:
+        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
+        st.info(
+            f"📥 Download modello aggiornato al {today_minus_1.strftime('%d-%m-%Y')}..."
+        )
+
+        gdown.download(
+            f"https://drive.google.com/uc?export=download&id={FILE_ID}",
+            str(MODEL_PATH),
+            quiet=False,
+        )
+
+    try:
+        bundle = joblib.load(MODEL_PATH)
+        return bundle
+
+    except Exception as e:
+        st.error(f"❌ Errore caricamento modello: {type(e).__name__}: {e}")
+        st.code(traceback.format_exc(), language="python")
+        raise
 
 
-st.success("✅ Modello caricato da Dropbox")
-st.write("✅ Variabili esogene:", selected_exog[:10])
+# ✅ USO
+bundle = load_model_bundle()
+model_base = bundle["base_model"]
 
+st.write(f'Modello aggiornato caricato ✅')
+
+selected_exog = model_base.exog_names_in_
+
+st.write(f'Varibaili esogene aggiornate✅')
+#
 try:
     df_hist = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
@@ -671,17 +681,16 @@ run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=T
 FORECAST_PATH = "dati_output/forecast_history.parquet"
 
 if run_forecast:
-    #
-    preds = forecast_day_ahead_96_full_production(
-            df_hist=df_hist,
-            model_prod=model_base,
-            local_cfg_prod=local_cfg_prod,
-            residual_feature_cols=residual_feature_cols,
-            meteo_downloader=MeteoDownloader(),
-            locations=LOCATIONS,
-            selected_exog=selected_exog,
-            steps=96,
-            warmup_steps=96 * 7)
+
+    preds = forecast_day_ahead_96_base(
+        df_hist=df_hist,
+        best_forecaster=model_base,
+        meteo_downloader=MeteoDownloader(),
+        locations=LOCATIONS,
+        selected_exog=selected_exog,
+        steps=96
+    )
+
     st.success("✅ Forecast completato")
     
     # ==========================================
