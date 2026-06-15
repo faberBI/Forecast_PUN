@@ -10,11 +10,16 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
-from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
+from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun, download_models_from_dropbox)
 
 import yaml
 import dropbox
+from pathlib import Path
 
+MODEL_DIR = Path("models")
+MODEL_DIR.mkdir(exist_ok=True)
+
+DROPBOX_MODELS_BASE_PATH = "/forecast_pun/models
 CONFIG_PATH = "config/config.yaml"
 
 @st.cache_data
@@ -623,44 +628,32 @@ import joblib
 import gdown
 
 @st.cache_resource
-def load_model_bundle():
+def load_model_from_dropbox():
 
-    if not FILE_ID:
-        st.error("❌ MODEL_PRODUCTION non configurato nei secrets")
-        raise ValueError("Missing FILE_ID")
+    token = st.secrets["DROPBOX_TOKEN"]
 
-    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size == 0:
-        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
-        st.info(
-            f"📥 Download modello aggiornato al {today_minus_1.strftime('%d-%m-%Y')}..."
-        )
+    st.info("📥 Download modelli da Dropbox...")
+    download_models_from_dropbox(token)
 
-        gdown.download(
-            f"https://drive.google.com/uc?export=download&id={FILE_ID}",
-            str(MODEL_PATH),
-            quiet=False,
-        )
+    model_path = MODEL_DIR / "model_prod.pkl"
 
-    try:
-        bundle = joblib.load(MODEL_PATH)
-        return bundle
+    if not model_path.exists():
+        raise RuntimeError("❌ model_prod.pkl non trovato dopo download")
 
-    except Exception as e:
-        st.error(f"❌ Errore caricamento modello: {type(e).__name__}: {e}")
-        st.code(traceback.format_exc(), language="python")
-        raise
+    model = joblib.load(model_path)
 
+    selected_exog = joblib.load(MODEL_DIR / "selected_exog.pkl")
+
+    return model, selected_exog
 
 # ✅ USO
-bundle = load_model_bundle()
-model_base = bundle["base_model"]
 
-st.write(f'Modello aggiornato caricato ✅')
+model_base, selected_exog = load_model_from_dropbox()
+st.write(type(model_base))
 
-selected_exog = model_base.exog_names_in_
+st.success("✅ Modello caricato da Dropbox")
+st.write("✅ Variabili esogene:", selected_exog[:10])
 
-st.write(f'Varibaili esogene aggiornate✅')
-#
 try:
     df_hist = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
