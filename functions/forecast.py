@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import dropbox
+
 
 def download_models_from_dropbox(dropbox_token: str):
     dbx = dropbox.Dropbox(dropbox_token)
