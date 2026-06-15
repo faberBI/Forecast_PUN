@@ -1,3 +1,9 @@
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+
 def forecast_day_ahead_96_base(
     df_hist,
     best_forecaster,
@@ -6,8 +12,6 @@ def forecast_day_ahead_96_base(
     selected_exog,
     steps=96
 ):
-    import pandas as pd
-    import numpy as np
 
     # ======================================================
     # 1. PREPARAZIONE STORICO
@@ -173,10 +177,6 @@ def pun_to_datetime(df_pun_excel: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     return df
-
-
-import plotly.graph_objects as go
-import pandas as pd
 
 
 def plot_forecast_pun(preds: pd.DataFrame):
