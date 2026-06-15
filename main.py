@@ -592,29 +592,27 @@ from pathlib import Path
 import gdown
 
 # ===== costanti (stesse del training!)
+PEAK_WEIGHT_BASE    = 2.0
 OFFPEAK_WEIGHT_BASE = 1.0
-PEAK_WEIGHT_BASE = 1.5
-MIDDAY_WEIGHT = 2.5
-EVENING_WEIGHT = 3.0
+MIDDAY_WEIGHT       = 4.0   # 12:00 – 17:00
+EVENING_WEIGHT      = 5.0   # 19:00 – 21:30
 
-MIDDAY_QOD = range(48, 68)
-EVENING_QOD = range(76, 87)
-
+# quarter_of_day  (qod = hour*4 + minute//15)
+MIDDAY_QOD  = set(range(48, 69))   # 12:00–17:00 inclusi
+EVENING_QOD = set(range(76, 87))   # 19:00–21:30 inclusi
 
 def peak_weight_func(index):
-    index = pd.DatetimeIndex(index)
-    qod = index.hour * 4 + (index.minute // 15)
-
+    """Pesi campionari: più alti nei regimi critici."""
+    index   = pd.DatetimeIndex(index)
+    qod     = index.hour * 4 + (index.minute // 15)
     weights = np.full(len(index), OFFPEAK_WEIGHT_BASE, dtype=float)
 
-    weights[np.isin(qod, list(MIDDAY_QOD))] = MIDDAY_WEIGHT
+    weights[np.isin(qod, list(MIDDAY_QOD))]  = MIDDAY_WEIGHT
     weights[np.isin(qod, list(EVENING_QOD))] = EVENING_WEIGHT
 
     daytime_mask = (index.hour >= 8) & (index.hour < 21)
     weights[(weights == OFFPEAK_WEIGHT_BASE) & daytime_mask] = PEAK_WEIGHT_BASE
-
     return weights
-
 
 
 MODEL_DIR = Path("models")
