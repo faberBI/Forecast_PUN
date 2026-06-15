@@ -791,7 +791,7 @@ if uploaded_file is not None:
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
         st.info(f"Forecast caricati: {len(df_forecast)} righe")
         # limite sui reali disponibili
-        max_real_dt = df_real["Datetime"].max()
+        max_real_dt = df_real.index.max()
         # uso SOLO forecast "maturi"
         df_forecast_eval = df_forecast[df_forecast["Datetime"] <= max_real_dt].copy()
 
