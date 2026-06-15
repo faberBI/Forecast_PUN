@@ -19,7 +19,7 @@ from pathlib import Path
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
 
-DROPBOX_MODELS_BASE_PATH = "/forecast_pun/models
+DROPBOX_MODELS_BASE_PATH = "/forecast_pun/models"
 CONFIG_PATH = "config/config.yaml"
 
 @st.cache_data
