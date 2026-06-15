@@ -772,10 +772,6 @@ if uploaded_file is not None:
         df_pun_excel = pd.read_excel(uploaded_file)
 
         df_real = pun_to_datetime(df_pun_excel)
-        if "Datetime" in df_real.columns:
-          df_real["Datetime"] = pd.to_datetime(df_real["Datetime"])
-          df_real = df_real.set_index("Datetime")
-          df_real = df_real.sort_index()
 
         st.success("✅ File PUN caricato e trasformato")
 
