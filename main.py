@@ -585,83 +585,170 @@ try:
 except:
     st.warning("⚠️ Nessun dato disponibile su Dropbox")
 
+#
 from pathlib import Path
-import gdown
+# =========================================================
+# LOAD MODEL FROM DROPBOX
+# =========================================================
 
-# ===== costanti (stesse del training!)
-OFFPEAK_WEIGHT_BASE = 1.0
-PEAK_WEIGHT_BASE = 1.5
-MIDDAY_WEIGHT = 2.5
-EVENING_WEIGHT = 3.0
+from pathlib import Path
+import json
+import joblib
+import traceback
+import dropbox
 
-MIDDAY_QOD = range(48, 68)
-EVENING_QOD = range(76, 87)
-
-
-def peak_weight_func(index):
-    index = pd.DatetimeIndex(index)
-    qod = index.hour * 4 + (index.minute // 15)
-
-    weights = np.full(len(index), OFFPEAK_WEIGHT_BASE, dtype=float)
-
-    weights[np.isin(qod, list(MIDDAY_QOD))] = MIDDAY_WEIGHT
-    weights[np.isin(qod, list(EVENING_QOD))] = EVENING_WEIGHT
-
-    daytime_mask = (index.hour >= 8) & (index.hour < 21)
-    weights[(weights == OFFPEAK_WEIGHT_BASE) & daytime_mask] = PEAK_WEIGHT_BASE
-
-    return weights
-
+# FONDAMENTALE:
+# pipeline.py deve essere presente nella root della webapp Streamlit.
+# Serve perché model_prod.pkl contiene riferimenti a funzioni definite in pipeline.py,
+# ad esempio production_weight_func.
+try:
+    import pipeline  # noqa: F401
+except Exception as e:
+    st.error(
+        "❌ Impossibile importare pipeline.py. "
+        "Devi copiare lo stesso pipeline.py usato su Hugging Face nella repo Streamlit."
+    )
+    st.code(traceback.format_exc(), language="python")
+    st.stop()
 
 
 MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_PATH = MODEL_DIR / "pun_full_pipeline.pkl"
-FILE_ID = st.secrets.get("MODEL_PRODUCTION", os.getenv("MODEL_PRODUCTION", "")) 
+DROPBOX_MODEL_DIR = "/forecast_pun/models"
 
-import traceback
-import joblib
-import gdown
+MODEL_PATH = MODEL_DIR / "model_prod.pkl"
+SELECTED_EXOG_PATH = MODEL_DIR / "selected_exog.pkl"
+METADATA_PATH = MODEL_DIR / "metadata.json"
 
-@st.cache_resource
-def load_model_bundle():
+DROPBOX_MODEL_PATH = f"{DROPBOX_MODEL_DIR}/model_prod.pkl"
+DROPBOX_SELECTED_EXOG_PATH = f"{DROPBOX_MODEL_DIR}/selected_exog.pkl"
+DROPBOX_METADATA_PATH = f"{DROPBOX_MODEL_DIR}/metadata.json"
 
-    if not FILE_ID:
-        st.error("❌ MODEL_PRODUCTION non configurato nei secrets")
-        raise ValueError("Missing FILE_ID")
 
-    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size == 0:
-        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
-        st.info(
-            f"📥 Download modello aggiornato al {today_minus_1.strftime('%d-%m-%Y')}..."
+def make_dbx_client():
+    """
+    Usa Dropbox token da Streamlit secrets oppure env.
+    """
+    token = st.secrets.get("DROPBOX_TOKEN", os.getenv("DROPBOX_TOKEN", ""))
+
+    if not token:
+        raise RuntimeError(
+            "DROPBOX_TOKEN mancante. Inseriscilo in st.secrets oppure nelle env vars."
         )
 
-        gdown.download(
-            f"https://drive.google.com/uc?export=download&id={FILE_ID}",
-            str(MODEL_PATH),
-            quiet=False,
+    return dropbox.Dropbox(oauth2_access_token=token)
+
+
+def download_file_from_dropbox(dbx, dropbox_path: str, local_path: Path):
+    """
+    Scarica un file da Dropbox e lo salva localmente.
+    """
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        metadata, res = dbx.files_download(dropbox_path)
+    except Exception as e:
+        raise RuntimeError(f"Download Dropbox fallito: {dropbox_path} -> {e}") from e
+
+    with open(local_path, "wb") as f:
+        f.write(res.content)
+
+    return metadata
+
+
+def local_file_ok(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
+@st.cache_resource(show_spinner=False)
+def load_model_artifacts_from_dropbox(force_download: bool = False):
+    """
+    Carica modello production da Dropbox.
+
+    File attesi:
+    - model_prod.pkl
+    - selected_exog.pkl
+    - metadata.json
+
+    Ritorna:
+    {
+        "model": ForecasterDirect,
+        "selected_exog": list[str],
+        "metadata": dict
+    }
+    """
+    dbx = make_dbx_client()
+
+    must_download = (
+        force_download
+        or not local_file_ok(MODEL_PATH)
+        or not local_file_ok(SELECTED_EXOG_PATH)
+        or not local_file_ok(METADATA_PATH)
+    )
+
+    if must_download:
+        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
+        st.info(
+            f"📥 Download modello production da Dropbox aggiornato al "
+            f"{today_minus_1.strftime('%d-%m-%Y')}..."
+        )
+
+        download_file_from_dropbox(
+            dbx=dbx,
+            dropbox_path=DROPBOX_MODEL_PATH,
+            local_path=MODEL_PATH,
+        )
+
+        download_file_from_dropbox(
+            dbx=dbx,
+            dropbox_path=DROPBOX_SELECTED_EXOG_PATH,
+            local_path=SELECTED_EXOG_PATH,
+        )
+
+        download_file_from_dropbox(
+            dbx=dbx,
+            dropbox_path=DROPBOX_METADATA_PATH,
+            local_path=METADATA_PATH,
         )
 
     try:
-        bundle = joblib.load(MODEL_PATH)
-        return bundle
+        model = joblib.load(MODEL_PATH)
+        selected_exog = joblib.load(SELECTED_EXOG_PATH)
+
+        with open(METADATA_PATH, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        return {
+            "model": model,
+            "selected_exog": selected_exog,
+            "metadata": metadata,
+        }
 
     except Exception as e:
-        st.error(f"❌ Errore caricamento modello: {type(e).__name__}: {e}")
+        st.error(f"❌ Errore caricamento modello da file locale: {type(e).__name__}: {e}")
         st.code(traceback.format_exc(), language="python")
         raise
 
 
-# ✅ USO
-bundle = load_model_bundle()
-model_base = bundle["base_model"]
+force_model_download = st.sidebar.button("🔁 Forza download modello da Dropbox")
 
-st.write(f'Modello aggiornato caricato ✅')
+artifacts = load_model_artifacts_from_dropbox(
+    force_download=force_model_download
+)
 
-selected_exog = model_base.exog_names_in_
+model_base = artifacts["model"]
+selected_exog = artifacts["selected_exog"]
+model_metadata = artifacts["metadata"]
 
-st.write(f'Varibaili esogene aggiornate✅')
+st.success("✅ Modello production caricato da Dropbox")
+
+trained_at = model_metadata.get("trained_at", "n/d")
+mode = model_metadata.get("mode", "n/d")
+n_exog = model_metadata.get("n_selected_exog", len(selected_exog))
+
+st.caption(f"📦 Model: model_prod.pkl | trained_at: {trained_at} | mode: {mode}")
+st.caption(f"🧬 Exog caricate: {n_exog}")
 #
 try:
     df_hist = load_from_dropbox(
