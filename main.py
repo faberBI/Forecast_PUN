@@ -897,8 +897,10 @@ if uploaded_file is not None:
             # ==============================================
             # 5. ERRORI
             # ==============================================
+            run_ts = pd.Timestamp.now()
             df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
             df_eval["abs_error"] = df_eval["error"].abs()
+            df_eval["created_at"] = run_ts
             # ==============================================#
             # 6. SAVE ERROR HISTORY
             # ==============================================#
@@ -908,8 +910,8 @@ if uploaded_file is not None:
               df_all = pd.concat([df_old, df_eval], ignore_index=True)
             else:
               df_all = df_eval.copy()
-            df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
-            df_all = df_all.sort_values("Datetime")
+            
+            df_all = df_all.sort_values(["Datetime", "created_at"])
             df_all.to_parquet(ERROR_PATH)
             upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet", st.secrets["DROPBOX_TOKEN"])
 
