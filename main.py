@@ -277,6 +277,86 @@ def validate_required_columns(df: pd.DataFrame, required_cols: list, df_name: st
 def debug_mi_dropbox(dropbox_token: str):
 
     st.subheader("🧪 Debug MI Dropbox")
+    # 5. CHECK MODELS FROM JSON
+    # =====================================================
+    for nome_df, targets in results.items():
+
+        if not isinstance(targets, dict):
+            continue
+
+        for target, res in targets.items():
+
+            if not isinstance(res, dict):
+                continue
+
+            if res.get("status") != "ok":
+                continue
+
+            raw_model_path = res.get("model_path")
+
+            if not raw_model_path:
+                report["models_missing"].append(f"{nome_df}/{target} -> model_path mancante")
+                continue
+
+            # pulizia path Windows/Linux
+            clean_path = str(raw_model_path).replace("\\", "/").strip()
+            file_name = os.path.basename(clean_path)
+
+            # evita controlli duplicati
+            if file_name in checked_models:
+                continue
+
+            checked_models.add(file_name)
+
+            if file_name not in available_models:
+                report["models_missing"].append(file_name)
+                continue
+
+            real_dropbox_path = available_models[file_name]
+
+            try:
+                _, file_res = dbx.files_download(real_dropbox_path)
+
+                payload = joblib.load(io.BytesIO(file_res.content))
+
+                for key in ["forecaster", "selected_exog", "target"]:
+                    if key not in payload:
+                        report["payload_errors"].append(
+                            f"{file_name} missing '{key}'"
+                        )
+
+                report["models_ok"].append(file_name)
+
+            except Exception as e:
+                report["models_missing"].append(f"{file_name} -> {e}")
+
+    # =====================================================
+    # OUTPUT
+    # =====================================================
+    st.write("✅ Dataset OK:", len(report["datasets_ok"]))
+    st.write("❌ Dataset missing:", report["datasets_missing"])
+
+    st.write("✅ Models OK:", len(report["models_ok"]))
+    st.write("❌ Models missing:", report["models_missing"])
+
+    if report["payload_errors"]:
+        st.warning("⚠️ Payload errors:")
+        st.write(report["payload_errors"])
+
+    st.write("🔎 JSON vs datasets:")
+    st.json(report["json_vs_datasets"])
+
+    if (
+        not report["datasets_missing"]
+        and not report["models_missing"]
+        and not report["payload_errors"]
+    ):
+        st.success("✅ Sistema MI pronto")
+    else:
+        st.error("❌ Problemi trovati")
+
+    return report
+
 
     dbx = dropbox.Dropbox(dropbox_token)
 
@@ -289,11 +369,9 @@ def debug_mi_dropbox(dropbox_token: str):
         "json_vs_datasets": {}
     }
 
-    # =========================================================
+    # =====================================================
     # 1. CHECK DATASETS
-    # =========================================================
-    st.write("📦 Checking datasets...")
-
+    # =====================================================
     for nome in colonne_analisi_mi:
         file_name = f"MI_{nome}.parquet"
         path = f"{MI_DATASETS_DIR}/{file_name}"
@@ -301,20 +379,51 @@ def debug_mi_dropbox(dropbox_token: str):
         try:
             dbx.files_get_metadata(path)
             report["datasets_ok"].append(file_name)
-        except:
-            report["datasets_missing"].append(file_name)
+        except Exception as e:
+            report["datasets_missing"].append(f"{file_name} -> {e}")
 
-    # =========================================================
+    # =====================================================
     # 2. LOAD JSON
-    # =========================================================
-    st.write("📄 Checking JSON...")
-
+    # =====================================================
     try:
         results = load_mi_json_from_dropbox(dropbox_token)
-        st.success("✅ JSON caricato")
+        st.success("✅ JSON OK")
     except Exception as e:
-        st.error(f"❌ JSON non leggibile: {e}")
-        return
+        st.error(f"❌ JSON ERROR: {e}")
+        return report
+
+    # =====================================================
+    # 3. CHECK JSON VS DATASETS
+    # =====================================================
+    json_keys = set(results.keys())
+    dfs_keys = set([make_market_key(x) for x in colonne_analisi_mi])
+
+    report["json_vs_datasets"] = {
+        "common": sorted(json_keys & dfs_keys),
+        "json_not_in_dfs": sorted(json_keys - dfs_keys),
+        "dfs_not_in_json": sorted(dfs_keys - json_keys),
+    }
+
+    # =====================================================
+    # 4. LIST MODELS FOLDER ONCE
+    # =====================================================
+    try:
+        folder_res = dbx.files_list_folder(MI_MODELS_DIR)
+
+        available_models = {
+            entry.name: entry.path_display
+            for entry in folder_res.entries
+            if entry.name.endswith(".joblib")
+        }
+
+    except Exception as e:
+        st.error(f"❌ Errore lettura cartella modelli: {MI_MODELS_DIR} -> {e}")
+        return report
+
+    # evita doppioni se stesso file appare più volte nel JSON
+    checked_models = set()
+
+
 
     # =========================================================
     # 3. CHECK MATCH KEYS
@@ -1399,18 +1508,6 @@ if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
     st.stop()
 
-if st.sidebar.button("📁 DEBUG MODELS DIR"):
-
-    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
-
-    st.write("Trying:", MI_MODELS_DIR)
-
-    try:
-        res = dbx.files_list_folder(MI_MODELS_DIR)
-        for f in res.entries:
-            st.write(f.name)
-    except Exception as e:
-        st.error(e)
 # =========================================================
 # DEBUG
 # =========================================================
