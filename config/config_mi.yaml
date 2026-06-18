@@ -1,12 +1,5 @@
 mi:
-  dropbox "Calabria"  dropbox:
-    - "Centro Nord"
-    - "Centro Sud"
-    - "Nord"
-    - "Sardegna"
-    - "Sicilia"
-    - "Sud"
-    - "Italia Coupling"
+  dropbox:
     root: "/forecast_mi"
 
     datasets_dir: "datasets"
@@ -25,3 +18,11 @@ mi:
 
   mercati:
     - "Italia (senza vincoli)"
+    - "Calabria"
+    - "Centro Nord"
+    - "Centro Sud"
+    - "Nord"
+    - "Sardegna"
+    - "Sicilia"
+    - "Sud"
+    - "Italia Coupling"
