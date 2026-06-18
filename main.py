@@ -1341,21 +1341,30 @@ def debug_mi_dropbox(dropbox_token: str):
             file_name = os.path.basename(model_path)
             model_path = f"{MI_MODELS_DIR}/{file_name}"
 
-
+            #
             try:
-                _, file_res = dbx.files_download(model_path)
-                report["models_ok"].append(model_path)
+                res = dbx.files_list_folder(MI_MODELS_DIR)
 
-                payload = joblib.load(io.BytesIO(file_res.content))
+                for entry in res.entries:
+                    if entry.name == file_name:
+                        real_path = entry.path_display
 
-                for key in ["forecaster", "selected_exog", "target"]:
-                    if key not in payload:
-                        report["payload_errors"].append(
-                            f"{model_path} missing {key}"
-                        )
+                        _, file_res = dbx.files_download(real_path)
+                        report["models_ok"].append(real_path)
 
-            except:
-                report["models_missing"].append(model_path)
+                        payload = joblib.load(io.BytesIO(file_res.content))
+
+                        for key in ["forecaster", "selected_exog", "target"]:
+                            if key not in payload:
+                                report["payload_errors"].append(
+                                f"{real_path} missing '{key}'")
+
+                        break
+                    else:
+                        report["models_missing"].append(file_name)
+
+            except Exception as e:
+                report["models_missing"].append(f"{file_name} -> {e}")
 
     # OUTPUT
     st.write("✅ Dataset OK:", len(report["datasets_ok"]))
