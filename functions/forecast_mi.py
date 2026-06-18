@@ -148,31 +148,56 @@ def load_mi_model_payload_from_dropbox(
     dropbox_models_dir
 ):
     """
-    Carica da Dropbox il payload del modello MI.
-
-    Payload atteso:
-    {
-        "forecaster": ...,
-        "selected_exog": [...],
-        "target": ...
-    }
+    Carica modello MI da Dropbox usando il filename reale trovato nella cartella models_retrained.
+    Robusto contro:
+    - path Windows nel JSON
+    - models_retrained\\file.joblib
+    - path parziali
     """
 
-    model_dropbox_path = resolve_mi_model_dropbox_path(
-        model_path_from_json=model_path_from_json,
-        dropbox_models_dir=dropbox_models_dir
-    )
+    if model_path_from_json is None:
+        raise ValueError("model_path_from_json è None.")
 
-    payload = read_joblib_from_dropbox(
-        dropbox_token=dropbox_token,
-        dropbox_path=model_dropbox_path
-    )
+    dbx = dropbox.Dropbox(dropbox_token)
 
-    required_keys = [
-        "forecaster",
-        "selected_exog",
-        "target"
-    ]
+    clean_path = str(model_path_from_json).replace("\\", "/").strip()
+    file_name = os.path.basename(clean_path)
+
+    dropbox_models_dir = normalize_dropbox_path(dropbox_models_dir).rstrip("/")
+
+    try:
+        folder_res = dbx.files_list_folder(dropbox_models_dir)
+
+        available_models = {
+            entry.name: entry.path_display
+            for entry in folder_res.entries
+            if entry.name.endswith(".joblib")
+        }
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Errore lettura cartella modelli Dropbox: {dropbox_models_dir} -> {e}"
+        )
+
+    if file_name not in available_models:
+        raise FileNotFoundError(
+            f"Modello non trovato su Dropbox: {file_name}. "
+            f"Cartella: {dropbox_models_dir}. "
+            f"Disponibili: {list_available_models_safe(available_models)}"
+        )
+
+    model_dropbox_path = available_models[file_name]
+
+    try:
+        _, res = dbx.files_download(model_dropbox_path)
+        payload = joblib.load(io.BytesIO(res.content))
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Errore download/load modello: {model_dropbox_path} -> {e}"
+        )
+
+    required_keys = ["forecaster", "selected_exog", "target"]
 
     for k in required_keys:
         if k not in payload:
@@ -181,6 +206,13 @@ def load_mi_model_payload_from_dropbox(
             )
 
     return payload, model_dropbox_path
+
+
+def list_available_models_safe(available_models):
+    try:
+        return list(available_models.keys())[:20]
+    except Exception:
+        return []
 
 
 # ==========================================================
