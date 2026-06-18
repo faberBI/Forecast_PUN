@@ -1131,10 +1131,6 @@ if uploaded_file is not None:
 # =========================================================
 # CONFIG
 # =========================================================
-
-config = load_config()
-MI = config["mi"]
-
 def dbx_path(*parts):
     return "/" + "/".join([str(p).strip("/") for p in parts])
 
