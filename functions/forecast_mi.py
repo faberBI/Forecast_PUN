@@ -141,7 +141,7 @@ def resolve_mi_model_dropbox_path(
 
     return f"{dropbox_models_dir}/{file_name}"
 
-
+@st.cache_data(show_spinner=False)
 def load_mi_model_payload_from_dropbox(
     dropbox_token,
     model_path_from_json,
