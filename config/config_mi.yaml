@@ -1,6 +1,6 @@
 mi:
   dropbox:
-    root: "forecast_pun/forecast_mi"
+    root: "/forecast_pun/forecast_mi"
 
     datasets_dir: "datasets"
     models_dir: "models_retrained"
