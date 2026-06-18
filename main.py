@@ -267,6 +267,138 @@ def validate_required_columns(df: pd.DataFrame, required_cols: list, df_name: st
         raise ValueError(f"{df_name}: mancano le colonne richieste: {missing}")
 
 
+def debug_mi_dropbox(dropbox_token: str):
+
+    st.subheader("🧪 Debug MI Dropbox")
+
+    dbx = dropbox.Dropbox(dropbox_token)
+
+    report = {
+        "datasets_ok": [],
+        "datasets_missing": [],
+        "models_ok": [],
+        "models_missing": [],
+        "payload_errors": [],
+        "json_vs_datasets": {}
+    }
+
+    # =========================================================
+    # 1. CHECK DATASETS
+    # =========================================================
+    st.write("📦 Checking datasets...")
+
+    for nome in colonne_analisi_mi:
+        file_name = f"MI_{nome}.parquet"
+        path = f"{MI_DATASETS_DIR}/{file_name}"
+
+        try:
+            dbx.files_get_metadata(path)
+            report["datasets_ok"].append(file_name)
+        except:
+            report["datasets_missing"].append(file_name)
+
+    # =========================================================
+    # 2. LOAD JSON
+    # =========================================================
+    st.write("📄 Checking JSON...")
+
+    try:
+        results = load_mi_json_from_dropbox(dropbox_token)
+        st.success("✅ JSON caricato")
+    except Exception as e:
+        st.error(f"❌ JSON non leggibile: {e}")
+        return
+
+    # =========================================================
+    # 3. CHECK MATCH KEYS
+    # =========================================================
+    dfs_keys = [make_market_key(x) for x in colonne_analisi_mi]
+    json_keys = list(results.keys())
+
+    report["json_vs_datasets"] = {
+        "common": list(set(json_keys) & set(dfs_keys)),
+        "json_not_in_dfs": list(set(json_keys) - set(dfs_keys)),
+        "dfs_not_in_json": list(set(dfs_keys) - set(json_keys))
+    }
+
+    # =========================================================
+    # 4. CHECK MODELS
+    # =========================================================
+    st.write("🤖 Checking models...")
+
+    for nome_df, targets in results.items():
+
+        for target, res in targets.items():
+
+            if not isinstance(res, dict):
+                continue
+
+            if res.get("status") != "ok":
+                continue
+
+            model_path = res.get("model_path")
+
+            if not model_path:
+                report["models_missing"].append(f"{nome_df}/{target} (no path)")
+                continue
+
+            # resolve path
+            if not model_path.startswith("/"):
+                model_path = f"{MI_MODELS_DIR}/{os.path.basename(model_path)}"
+
+            try:
+                _, res_file = dbx.files_download(model_path)
+                report["models_ok"].append(model_path)
+
+                # CHECK PAYLOAD
+                try:
+                    payload = joblib.load(io.BytesIO(res_file.content))
+
+                    for key in ["forecaster", "selected_exog", "target"]:
+                        if key not in payload:
+                            report["payload_errors"].append(
+                                f"{model_path} missing '{key}'"
+                            )
+
+                except Exception as e:
+                    report["payload_errors"].append(
+                        f"{model_path} corrupted: {e}"
+                    )
+
+            except Exception:
+                report["models_missing"].append(model_path)
+
+    # =========================================================
+    # OUTPUT
+    # =========================================================
+    st.subheader("📊 Report")
+
+    st.write("✅ Dataset OK:", len(report["datasets_ok"]))
+    st.write("❌ Dataset mancanti:", report["datasets_missing"])
+
+    st.write("✅ Modelli OK:", len(report["models_ok"]))
+    st.write("❌ Modelli mancanti:", report["models_missing"])
+
+    if report["payload_errors"]:
+        st.warning("⚠️ Problemi payload modelli:")
+        st.write(report["payload_errors"])
+
+    st.write("🔎 JSON vs datasets:")
+    st.json(report["json_vs_datasets"])
+
+    if (
+        not report["datasets_missing"]
+        and not report["models_missing"]
+        and not report["payload_errors"]
+        and not report["json_vs_datasets"]["json_not_in_dfs"]
+        and not report["json_vs_datasets"]["dfs_not_in_json"]
+    ):
+        st.success("✅ TUTTO OK - pronto per forecast MI")
+    else:
+        st.error("❌ Problemi trovati")
+
+    return report
+
 # =========================================================
 # CORE PIPELINE
 # =========================================================
@@ -1122,6 +1254,9 @@ if not DROPBOX_TOKEN:
     st.stop()
 
 
+if st.sidebar.button("🧪 Debug MI Dropbox"):
+    debug_mi_dropbox(DROPBOX_TOKEN)
+
 # LOAD DATASETS
 col1, col2, col3 = st.columns(3)
 
@@ -1155,12 +1290,13 @@ with st.expander("Check JSON"):
 
 # PREVIEW
 with st.expander("Preview dataset"):
-
+    
     if dfs_mi:
-        mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
+        keys = list(dfs_mi.keys())
+    if keys:
+        mkt = st.selectbox("Mercato", keys)
         st.dataframe(dfs_mi[mkt].tail(50))
-    else:
-        st.warning("Niente dataset")
+
 
 
 # CONTROL
@@ -1202,9 +1338,8 @@ if run_mi_forecast:
                 freq=MI_FREQ,
                 lookback_days=MI_LOOKBACK_DAYS
             )
-
         st.success("Forecast MI completato")
-
+        df_long["run_id"] = pd.Timestamp.now()
         st.subheader("Output")
         st.dataframe(df_long.tail(200))
 
@@ -1307,11 +1442,12 @@ if uploaded_file_mi:
         # =================================================
         # SAVE ERROR HISTORY
         # =================================================
-        if os.path.exists(MI_ERROR_PATH):
+        try:
             df_old = pd.read_parquet(MI_ERROR_PATH)
             df_all = pd.concat([df_old, df_eval], ignore_index=True)
-        else:
+        except:
             df_all = df_eval.copy()
+
 
         df_all = df_all.sort_values("Datetime")
         df_all.to_parquet(MI_ERROR_PATH)
