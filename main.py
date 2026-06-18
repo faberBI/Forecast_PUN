@@ -23,7 +23,14 @@ def load_config():
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
+
+def load_config_mi():
+    with open("config/config_mi.yaml", "r") as f:
+        return yaml.safe_load(f)
+
+
 config = load_config()
+MI = load_config_mi()["mi"]
 
 FEATURES_OLD = config["features"]["FEATURES_OLD"]
 FEATURES_NEW = config["features"]["FEATURES_NEW"]
