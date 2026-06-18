@@ -1244,7 +1244,7 @@ def plot_mi(df_long, nome_df, target):
 
 
 # =========================================================
-# UI
+# ⚡ MI FORECAST + MONITORING
 # =========================================================
 
 st.divider()
@@ -1257,10 +1257,16 @@ if not DROPBOX_TOKEN:
     st.stop()
 
 
+# =========================================================
+# DEBUG
+# =========================================================
 if st.sidebar.button("🧪 Debug MI Dropbox"):
     debug_mi_dropbox(DROPBOX_TOKEN)
 
+
+# =========================================================
 # LOAD DATASETS
+# =========================================================
 col1, col2, col3 = st.columns(3)
 
 try:
@@ -1281,9 +1287,10 @@ except Exception:
     st.code(traceback.format_exc())
 
 
+# =========================================================
 # CHECK JSON
-with st.expander("Check JSON"):
-
+# =========================================================
+with st.expander("Check JSON MI", expanded=False):
     try:
         check = check_mi_json_vs_dfs_keys(DROPBOX_TOKEN, dfs_mi)
         st.json(check)
@@ -1291,9 +1298,10 @@ with st.expander("Check JSON"):
         st.warning(e)
 
 
-# PREVIEW
+# =========================================================
+# PREVIEW DATASET
+# =========================================================
 with st.expander("Preview dataset"):
-    
     if dfs_mi:
         mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
         st.dataframe(dfs_mi[mkt].tail(50))
@@ -1301,19 +1309,20 @@ with st.expander("Preview dataset"):
         st.warning("Niente dataset")
 
 
-
+# =========================================================
 # CONTROL
-run_mi_forecast = st.button("Esegui Forecast MI")
+# =========================================================
+run_mi_forecast = st.button("📈 Esegui Forecast MI")
+
 
 # =========================================================
-# RUN
+# RUN FORECAST
 # =========================================================
-
 if run_mi_forecast:
 
     try:
         if not dfs_mi:
-            st.error("No data")
+            st.error("❌ Nessun dataset MI")
             st.stop()
 
         terna = TernaClient(
@@ -1323,7 +1332,7 @@ if run_mi_forecast:
 
         meteo = MeteoDownloader()
 
-        with st.spinner("Running MI forecast..."):
+        with st.spinner("🚀 Running MI forecast..."):
 
             df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
                 dfs=dfs_mi,
@@ -1341,107 +1350,127 @@ if run_mi_forecast:
                 freq=MI_FREQ,
                 lookback_days=MI_LOOKBACK_DAYS
             )
-        st.success("Forecast MI completato")
+
+        # ✅ tracking run
         df_long["run_id"] = pd.Timestamp.now()
-        st.subheader("Output")
+
+        st.success("✅ Forecast MI completato")
+
+        st.subheader("Output forecast")
         st.dataframe(df_long.tail(200))
 
-        st.download_button("Download long", df_long.to_csv(index=False))
+        st.download_button(
+            "⬇️ Download forecast",
+            df_long.to_csv(index=False),
+            file_name="forecast_mi.csv"
+        )
 
     except Exception as e:
         st.error(e)
         st.code(traceback.format_exc())
 
+
 # =========================================================
-# 📉 MI MODEL MONITORING (Concept Drift)
+# 📉 MONITORING MI
 # =========================================================
 
 st.divider()
-st.header("📉 MI Monitoring (Concept Drift)")
+st.header("📉 MI Monitoring")
+
+# =========================================================
+# CHECK HISTORY EXISTENCE (CRITICO)
+# =========================================================
+import dropbox
+
+dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+
+try:
+    dbx.files_get_metadata(MI_FORECAST_HISTORY_LONG)
+    history_exists = True
+except:
+    history_exists = False
+
+if not history_exists:
+
+    st.info("ℹ️ Prima esecuzione → devi generare il forecast")
+
+    st.markdown("""
+    ### Step:
+    1. Clicca **Esegui Forecast MI**
+    2. Verrà creato lo storico forecast
+    3. Torna qui e carica i dati reali
+    """)
+
+    st.stop()
+
+
+# =========================================================
+# LOAD REAL DATA
+# =========================================================
 
 MI_ERROR_PATH = "dati_output/mi_error_history.parquet"
 
 uploaded_file_mi = st.file_uploader(
-    "📥 Carica file MI reali (xlsx)",
-    type=["xlsx"],
-    key="mi_upload"
+    "📥 Carica file MI reali",
+    type=["xlsx"]
 )
 
 if uploaded_file_mi:
 
     try:
-        # =================================================
-        # LOAD REAL DATA
-        # =================================================
-        df_real_raw = pd.read_excel(uploaded_file_mi)
+        df_real = pd.read_excel(uploaded_file_mi)
 
-        # =========================
-        # BUILD DATETIME (TERNA)
-        # =========================
-        if {"Data", "Ora", "Periodo"}.issubset(df_real_raw.columns):
+        # =================================================
+        # BUILD DATETIME
+        # =================================================
+        if {"Data", "Ora", "Periodo"}.issubset(df_real.columns):
 
-            df_real_raw["Data"] = pd.to_datetime(df_real_raw["Data"], dayfirst=True)
+            df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
 
             minute_map = {1: 0, 2: 15, 3: 30, 4: 45}
-            df_real_raw["minute"] = df_real_raw["Periodo"].map(minute_map)
+            df_real["minute"] = df_real["Periodo"].map(minute_map)
 
-            df_real_raw["Datetime"] = (
-                df_real_raw["Data"]
-                + pd.to_timedelta(df_real_raw["Ora"] - 1, unit="h")
-                + pd.to_timedelta(df_real_raw["minute"], unit="m")
+            df_real["Datetime"] = (
+                df_real["Data"]
+                + pd.to_timedelta(df_real["Ora"] - 1, unit="h")
+                + pd.to_timedelta(df_real["minute"], unit="m")
             )
 
-        elif "Datetime" in df_real_raw.columns:
-            df_real_raw["Datetime"] = pd.to_datetime(df_real_raw["Datetime"])
+        elif "Datetime" in df_real.columns:
+            df_real["Datetime"] = pd.to_datetime(df_real["Datetime"])
 
         else:
-            st.error("❌ Serve Datetime oppure Data/Ora/Periodo")
+            st.error("❌ Formato file non valido")
             st.stop()
 
-        df_real_raw = df_real_raw.sort_values("Datetime")
-
-        st.success("✅ MI reali caricati e trasformati")
+        df_real = df_real.sort_values("Datetime")
 
         # =================================================
         # LOAD FORECAST HISTORY
         # =================================================
-        try:
-            df_forecast = load_from_dropbox(
-                MI_FORECAST_HISTORY_LONG,
-                DROPBOX_TOKEN
-            ).copy()
-
-        except Exception:
-            st.error("❌ Forecast history MI non trovata su Dropbox")
-            st.stop()
+        df_forecast = load_from_dropbox(
+            MI_FORECAST_HISTORY_LONG,
+            DROPBOX_TOKEN
+        ).copy()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
 
         # =================================================
-        # FILTRO SOLO MERCATI RILEVANTI
+        # MERCATI
         # =================================================
-        markets_to_use = [
-            "Calabria",
-            "Centro Nord",
-            "Centro Sud",
-            "Nord",
-            "Sardegna",
-            "Sicilia",
-            "Sud",
-            "Italia Coupling"
+        markets = [
+            "Calabria", "Centro Nord", "Centro Sud",
+            "Nord", "Sardegna", "Sicilia",
+            "Sud", "Italia Coupling"
         ]
 
-        # pulizia nomi colonne (spazi doppi ecc)
-        df_real_raw.columns = [str(c).strip() for c in df_real_raw.columns]
+        df_real.columns = [str(c).strip() for c in df_real.columns]
 
         all_eval = []
 
-        # =================================================
-        # LOOP MERCATI
-        # =================================================
-        for col in markets_to_use:
+        for col in markets:
 
-            if col not in df_real_raw.columns:
+            if col not in df_real.columns:
                 continue
 
             nome_df = make_market_key(col)
@@ -1450,11 +1479,8 @@ if uploaded_file_mi:
                 df_forecast["nome_df"] == nome_df
             ].copy()
 
-            if df_pred.empty:
-                continue
-
             df_tmp = df_pred.merge(
-                df_real_raw[["Datetime", col]],
+                df_real[["Datetime", col]],
                 on="Datetime",
                 how="inner"
             )
@@ -1464,30 +1490,27 @@ if uploaded_file_mi:
 
             df_tmp = df_tmp.rename(columns={col: "real"})
 
-            # =================================================
-            # ERROR CALCULATION
-            # =================================================
+            # ERRORI
             df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
             df_tmp["abs_error"] = df_tmp["error"].abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
-
             df_tmp["market"] = col
 
             all_eval.append(df_tmp)
 
         if not all_eval:
-            st.warning("⚠️ Nessun matching forecast vs real")
+            st.warning("⚠️ Nessun match forecast vs real")
             st.stop()
 
         df_eval = pd.concat(all_eval, ignore_index=True)
 
         # =================================================
-        # SAVE ERROR HISTORY
+        # SAVE ERROR
         # =================================================
         try:
             df_old = pd.read_parquet(MI_ERROR_PATH)
-            df_all = pd.concat([df_old, df_eval], ignore_index=True)
-        except Exception:
+            df_all = pd.concat([df_old, df_eval])
+        except:
             df_all = df_eval.copy()
 
         df_all = df_all.sort_values("Datetime")
@@ -1499,71 +1522,33 @@ if uploaded_file_mi:
             DROPBOX_TOKEN
         )
 
-        st.success("✅ MI error history aggiornata")
-
         # =================================================
         # METRICS
         # =================================================
-        df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
-        df_all["rmse_rolling"] = (df_all["error"]**2).rolling(96).mean()**0.5
+        df_all["mae"] = df_all["abs_error"].rolling(96).mean()
+        df_all["rmse"] = (df_all["error"]**2).rolling(96).mean()**0.5
 
-        # =================================================
-        # UI METRICS
-        # =================================================
-        st.subheader("📊 Metriche ultime")
+        st.subheader("Metriche")
 
         c1, c2 = st.columns(2)
+        c1.metric("MAE", round(df_all["mae"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_all["rmse"].iloc[-1], 2))
 
-        c1.metric("MAE", round(df_all["mae_rolling"].iloc[-1], 2))
-        c2.metric("RMSE", round(df_all["rmse_rolling"].iloc[-1], 2))
-
-        st.line_chart(
-            df_all[["mae_rolling", "rmse_rolling"]].dropna()
-        )
+        st.line_chart(df_all[["mae", "rmse"]].dropna())
 
         # =================================================
-        # DRIFT ALERT
+        # DRIFT
         # =================================================
         mape = df_all["error_abs_perc"].mean() * 100
-
-        st.subheader("📊 MAPE globale")
-        st.write(f"{mape:.2f}%")
+        st.write(f"MAPE: {mape:.2f}%")
 
         if mape > 25:
-            st.error("🚨 Drift forte → retraining urgente")
+            st.error("🚨 Drift forte")
         elif mape > 18:
-            st.warning("⚠️ Drift moderato → monitorare")
-        elif mape > 12:
-            st.info("🟡 Modello ok ma migliorabile")
+            st.warning("⚠️ Drift moderato")
         else:
-            st.success("✅ Modello stabile")
-
-        # =================================================
-        # ERROR DISTRIBUTION
-        # =================================================
-        import plotly.express as px
-
-        df_all["hour"] = df_all["Datetime"].dt.hour
-
-        fig = px.box(
-            df_all,
-            x="hour",
-            y="error",
-            color="market",
-            title="Errore per ora del giorno"
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        # =================================================
-        # DOWNLOAD
-        # =================================================
-        st.download_button(
-            label="⬇️ Scarica error history MI",
-            data=df_all.to_csv(index=False),
-            file_name="mi_error_history.csv"
-        )
+            st.success("✅ OK")
 
     except Exception as e:
-        st.error(f"❌ Errore monitoring MI: {e}")
+        st.error(e)
         st.code(traceback.format_exc())
