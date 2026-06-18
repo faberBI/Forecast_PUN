@@ -371,9 +371,10 @@ def debug_mi_dropbox(dropbox_token: str):
                     report["payload_errors"].append(
                         f"{model_path} corrupted: {e}"
                     )
+            #
+            except Exception as e:
+                report["models_missing"].append(f"{model_path} -> {str(e)}")
 
-            except Exception:
-                report["models_missing"].append(model_path)
 
     # =========================================================
     # OUTPUT
@@ -1333,8 +1334,11 @@ def debug_mi_dropbox(dropbox_token: str):
                 report["models_missing"].append(f"{nome_df}/{target}")
                 continue
 
-            if not model_path.startswith("/"):
-                model_path = f"{MI_MODELS_DIR}/{model_path}"
+
+            model_path = str(model_path).replace("\\", "/")
+            file_name = os.path.basename(model_path)
+            model_path = f"{MI_MODELS_DIR}/{file_name}"
+
 
             try:
                 _, file_res = dbx.files_download(model_path)
