@@ -1390,7 +1390,18 @@ if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
     st.stop()
 
+if st.sidebar.button("📁 DEBUG MODELS DIR"):
 
+    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+
+    st.write("Trying:", MI_MODELS_DIR)
+
+    try:
+        res = dbx.files_list_folder(MI_MODELS_DIR)
+        for f in res.entries:
+            st.write(f.name)
+    except Exception as e:
+        st.error(e)
 # =========================================================
 # DEBUG
 # =========================================================
