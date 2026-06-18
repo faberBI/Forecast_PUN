@@ -1244,11 +1244,11 @@ def plot_mi(df_long, nome_df, target):
 
 
 # =========================================================
-# ⚡ MI FORECAST + MONITORING
+# ⚡ MI PIPELINE: DATASET → FORECAST → MONITORING
 # =========================================================
 
 st.divider()
-st.header("⚡ MI Forecast Day Ahead")
+st.header("⚡ MI Forecast + Monitoring")
 
 DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", "")
 
@@ -1265,7 +1265,7 @@ if st.sidebar.button("🧪 Debug MI Dropbox"):
 
 
 # =========================================================
-# LOAD DATASETS
+# LOAD DATASETS (INPUT)
 # =========================================================
 col1, col2, col3 = st.columns(3)
 
@@ -1290,7 +1290,7 @@ except Exception:
 # =========================================================
 # CHECK JSON
 # =========================================================
-with st.expander("Check JSON MI", expanded=False):
+with st.expander("🔎 Check JSON MI"):
     try:
         check = check_mi_json_vs_dfs_keys(DROPBOX_TOKEN, dfs_mi)
         st.json(check)
@@ -1301,7 +1301,7 @@ with st.expander("Check JSON MI", expanded=False):
 # =========================================================
 # PREVIEW DATASET
 # =========================================================
-with st.expander("Preview dataset"):
+with st.expander("📚 Preview dataset"):
     if dfs_mi:
         mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
         st.dataframe(dfs_mi[mkt].tail(50))
@@ -1312,18 +1312,23 @@ with st.expander("Preview dataset"):
 # =========================================================
 # CONTROL
 # =========================================================
-run_mi_forecast = st.button("📈 Esegui Forecast MI")
+run_pipeline = st.button("🚀 Run MI Pipeline (Forecast + Monitoring)")
 
 
 # =========================================================
-# RUN FORECAST
+# PIPELINE COMPLETA
 # =========================================================
-if run_mi_forecast:
+if run_pipeline:
 
     try:
         if not dfs_mi:
             st.error("❌ Nessun dataset MI")
             st.stop()
+
+        # =================================================
+        # 1️⃣ FORECAST
+        # =================================================
+        st.subheader("📈 Step 1: Forecast")
 
         terna = TernaClient(
             client_id=st.secrets["TERNA_CLIENT_ID"],
@@ -1332,7 +1337,7 @@ if run_mi_forecast:
 
         meteo = MeteoDownloader()
 
-        with st.spinner("🚀 Running MI forecast..."):
+        with st.spinner("Running forecast..."):
 
             df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
                 dfs=dfs_mi,
@@ -1351,74 +1356,27 @@ if run_mi_forecast:
                 lookback_days=MI_LOOKBACK_DAYS
             )
 
-        # ✅ tracking run
         df_long["run_id"] = pd.Timestamp.now()
 
-        st.success("✅ Forecast MI completato")
+        st.success("✅ Forecast completato")
+        st.dataframe(df_long.tail(100))
 
-        st.subheader("Output forecast")
-        st.dataframe(df_long.tail(200))
+        # =================================================
+        # 2️⃣ UPLOAD REALI
+        # =================================================
+        st.subheader("📥 Step 2: Upload dati reali")
 
-        st.download_button(
-            "⬇️ Download forecast",
-            df_long.to_csv(index=False),
-            file_name="forecast_mi.csv"
+        uploaded_file = st.file_uploader(
+            "Carica Excel MI reali",
+            type=["xlsx"],
+            key="pipeline"
         )
 
-    except Exception as e:
-        st.error(e)
-        st.code(traceback.format_exc())
+        if uploaded_file is None:
+            st.info("⬆️ Carica file reale per continuare")
+            st.stop()
 
-
-# =========================================================
-# 📉 MONITORING MI
-# =========================================================
-
-st.divider()
-st.header("📉 MI Monitoring")
-
-# =========================================================
-# CHECK HISTORY EXISTENCE (CRITICO)
-# =========================================================
-import dropbox
-
-dbx = dropbox.Dropbox(DROPBOX_TOKEN)
-
-try:
-    dbx.files_get_metadata(MI_FORECAST_HISTORY_LONG)
-    history_exists = True
-except:
-    history_exists = False
-
-if not history_exists:
-
-    st.info("ℹ️ Prima esecuzione → devi generare il forecast")
-
-    st.markdown("""
-    ### Step:
-    1. Clicca **Esegui Forecast MI**
-    2. Verrà creato lo storico forecast
-    3. Torna qui e carica i dati reali
-    """)
-
-    st.stop()
-
-
-# =========================================================
-# LOAD REAL DATA
-# =========================================================
-
-MI_ERROR_PATH = "dati_output/mi_error_history.parquet"
-
-uploaded_file_mi = st.file_uploader(
-    "📥 Carica file MI reali",
-    type=["xlsx"]
-)
-
-if uploaded_file_mi:
-
-    try:
-        df_real = pd.read_excel(uploaded_file_mi)
+        df_real = pd.read_excel(uploaded_file)
 
         # =================================================
         # BUILD DATETIME
@@ -1446,8 +1404,10 @@ if uploaded_file_mi:
         df_real = df_real.sort_values("Datetime")
 
         # =================================================
-        # LOAD FORECAST HISTORY
+        # 3️⃣ LOAD HISTORY (ORA ESISTE)
         # =================================================
+        st.subheader("📉 Step 3: Monitoring")
+
         df_forecast = load_from_dropbox(
             MI_FORECAST_HISTORY_LONG,
             DROPBOX_TOKEN
@@ -1475,9 +1435,9 @@ if uploaded_file_mi:
 
             nome_df = make_market_key(col)
 
-            df_pred = df_forecast[
+            df_pred = df_forecast.loc[
                 df_forecast["nome_df"] == nome_df
-            ].copy()
+            ]
 
             df_tmp = df_pred.merge(
                 df_real[["Datetime", col]],
@@ -1505,19 +1465,28 @@ if uploaded_file_mi:
         df_eval = pd.concat(all_eval, ignore_index=True)
 
         # =================================================
-        # SAVE ERROR
+        # SAVE ERROR HISTORY
         # =================================================
         try:
-            df_old = pd.read_parquet(MI_ERROR_PATH)
-            df_all = pd.concat([df_old, df_eval])
+            df_old = pd.read_parquet("dati_output/mi_error_history.parquet")
+            df_all = pd.concat([df_old, df_eval], ignore_index=True)
         except:
             df_all = df_eval.copy()
 
-        df_all = df_all.sort_values("Datetime")
-        df_all.to_parquet(MI_ERROR_PATH)
+        df_all = (
+            df_all
+            .sort_values("Datetime")
+            .drop_duplicates(
+                subset=["Datetime", "nome_df", "target"],
+                keep="last"
+            )
+            .reset_index(drop=True)
+        )
+
+        df_all.to_parquet("dati_output/mi_error_history.parquet")
 
         upload_to_dropbox(
-            MI_ERROR_PATH,
+            "dati_output/mi_error_history.parquet",
             MI_FORECAST_ERRORS_PATH,
             DROPBOX_TOKEN
         )
@@ -1528,7 +1497,7 @@ if uploaded_file_mi:
         df_all["mae"] = df_all["abs_error"].rolling(96).mean()
         df_all["rmse"] = (df_all["error"]**2).rolling(96).mean()**0.5
 
-        st.subheader("Metriche")
+        st.subheader("📊 Metriche")
 
         c1, c2 = st.columns(2)
         c1.metric("MAE", round(df_all["mae"].iloc[-1], 2))
@@ -1547,7 +1516,9 @@ if uploaded_file_mi:
         elif mape > 18:
             st.warning("⚠️ Drift moderato")
         else:
-            st.success("✅ OK")
+            st.success("✅ Modello stabile")
+
+        st.success("✅ Pipeline completata")
 
     except Exception as e:
         st.error(e)
