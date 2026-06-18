@@ -1,19 +1,20 @@
 import os
 import traceback
 from datetime import date
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.stats import ks_2samp
 import plotly.graph_objects as go
-st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
-                   
+import yaml
+import dropbox
+
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 
-import yaml
-import dropbox
+from functions.forecast_mi import (forecast_next_96_all_mi_models_dropbox)
+
+st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
 
 CONFIG_PATH = "config/config.yaml"
 
@@ -986,3 +987,406 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"❌ Errore processamento PUN: {e}")
         st.code(traceback.format_exc(), language="python")
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+config = load_config()
+MI = config["mi"]
+
+def dbx_path(*parts):
+    return "/" + "/".join([str(p).strip("/") for p in parts])
+
+MI_DROPBOX_ROOT = MI["dropbox"]["root"]
+
+MI_DATASETS_DIR = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["datasets_dir"])
+MI_MODELS_DIR = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["models_dir"])
+MI_RESULTS_JSON_PATH = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["results_json"])
+
+MI_FORECASTS_DIR = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["forecasts_dir"])
+MI_FORECAST_HISTORY_LONG = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["forecast_history_long"])
+MI_FORECAST_HISTORY_WIDE = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["forecast_history_wide"])
+MI_FORECAST_ERRORS_PATH = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["forecast_errors"])
+
+MI_STEPS = MI["forecast"]["steps"]
+MI_FREQ = MI["forecast"]["freq"]
+MI_LOOKBACK_DAYS = MI["forecast"]["lookback_days"]
+
+colonne_analisi_mi = MI["mercati"]
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def make_market_key(nome: str) -> str:
+    return (
+        str(nome)
+        .lower()
+        .replace(" ", "_")
+        .replace("(", "")
+        .replace(")", "")
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_mi_datasets_from_dropbox_cached(dropbox_token: str):
+
+    dfs_mi = {}
+
+    for nome in colonne_analisi_mi:
+
+        file_name = f"MI_{nome}.parquet"
+        dropbox_path = f"{MI_DATASETS_DIR}/{file_name}"
+
+        try:
+            df = load_from_dropbox(dropbox_path, dropbox_token).copy()
+
+            if "Datetime" in df.columns:
+                df["Datetime"] = pd.to_datetime(df["Datetime"])
+                df = df.set_index("Datetime").sort_index()
+
+            df.index = pd.to_datetime(df.index)
+            df = df[~df.index.duplicated(keep="last")]
+
+            try:
+                df = df.asfreq("15min")
+            except:
+                pass
+
+            df = df.replace([np.inf, -np.inf], np.nan).ffill()
+
+            key = make_market_key(nome)
+            dfs_mi[key] = df
+
+        except Exception as e:
+            print(f"⚠️ Errore MI {dropbox_path}: {e}")
+
+    return dfs_mi
+
+
+def load_mi_json_from_dropbox(dropbox_token: str):
+
+    dbx = dropbox.Dropbox(dropbox_token)
+
+    _, res = dbx.files_download(MI_RESULTS_JSON_PATH)
+    return json.loads(res.content.decode("utf-8"))
+
+
+def check_mi_json_vs_dfs_keys(dropbox_token, dfs_mi):
+
+    results = load_mi_json_from_dropbox(dropbox_token)
+
+    return {
+        "common": list(set(results.keys()) & set(dfs_mi.keys())),
+        "json_not_in_dfs": list(set(results.keys()) - set(dfs_mi.keys())),
+        "dfs_not_in_json": list(set(dfs_mi.keys()) - set(results.keys()))
+    }
+
+
+def plot_mi(df_long, nome_df, target):
+
+    tmp = df_long[
+        (df_long["nome_df"] == nome_df) &
+        (df_long["target"] == target)
+    ].copy()
+
+    if tmp.empty:
+        return None
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=tmp["Datetime"],
+        y=tmp["pred"],
+        mode="lines",
+        name=f"{nome_df} / {target}"
+    ))
+
+    return fig
+
+
+# =========================================================
+# UI
+# =========================================================
+
+st.divider()
+st.header("⚡ MI Forecast Day Ahead")
+
+DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", "")
+
+if not DROPBOX_TOKEN:
+    st.error("❌ DROPBOX_TOKEN mancante")
+    st.stop()
+
+
+# LOAD DATASETS
+col1, col2, col3 = st.columns(3)
+
+try:
+    dfs_mi = load_mi_datasets_from_dropbox_cached(DROPBOX_TOKEN)
+
+    col1.metric("Dataset MI", len(dfs_mi))
+
+    if dfs_mi:
+        last_dt = max(v.index.max() for v in dfs_mi.values())
+        col2.metric("Ultima data", str(last_dt))
+        col3.metric("Mercati", len(colonne_analisi_mi))
+    else:
+        col2.warning("Nessun dataset")
+
+except Exception:
+    dfs_mi = {}
+    st.error("Errore loading MI")
+    st.code(traceback.format_exc())
+
+
+# CHECK JSON
+with st.expander("Check JSON"):
+
+    try:
+        check = check_mi_json_vs_dfs_keys(DROPBOX_TOKEN, dfs_mi)
+        st.json(check)
+    except Exception as e:
+        st.warning(e)
+
+
+# PREVIEW
+with st.expander("Preview dataset"):
+
+    if dfs_mi:
+        mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
+        st.dataframe(dfs_mi[mkt].tail(50))
+    else:
+        st.warning("Niente dataset")
+
+
+# CONTROL
+run_mi_forecast = st.button("Esegui Forecast MI")
+
+# =========================================================
+# RUN
+# =========================================================
+
+if run_mi_forecast:
+
+    try:
+        if not dfs_mi:
+            st.error("No data")
+            st.stop()
+
+        terna = TernaClient(
+            client_id=st.secrets["TERNA_CLIENT_ID"],
+            client_secret=st.secrets["TERNA_CLIENT_SECRET"]
+        )
+
+        meteo = MeteoDownloader()
+
+        with st.spinner("Running MI forecast..."):
+
+            df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
+                dfs=dfs_mi,
+                dropbox_token=DROPBOX_TOKEN,
+                dropbox_results_json_path=MI_RESULTS_JSON_PATH,
+                dropbox_models_dir=MI_MODELS_DIR,
+                dropbox_forecasts_dir=MI_FORECASTS_DIR,
+                forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
+                forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
+                errors_path=MI_FORECAST_ERRORS_PATH,
+                meteo=meteo,
+                locations=LOCATIONS,
+                terna=terna,
+                steps=MI_STEPS,
+                freq=MI_FREQ,
+                lookback_days=MI_LOOKBACK_DAYS
+            )
+
+        st.success("Forecast MI completato")
+
+        st.subheader("Output")
+        st.dataframe(df_long.tail(200))
+
+        st.download_button("Download long", df_long.to_csv(index=False))
+
+    except Exception as e:
+        st.error(e)
+        st.code(traceback.format_exc())
+
+# =========================================================
+# 📉 MI MODEL MONITORING (Concept Drift)
+# =========================================================
+
+st.divider()
+st.header("📉 MI Monitoring (Concept Drift)")
+
+MI_ERROR_PATH = "dati_output/mi_error_history.parquet"
+
+uploaded_file_mi = st.file_uploader(
+    "📥 Carica file MI reali (xlsx)",
+    type=["xlsx"],
+    key="mi_upload"
+)
+
+if uploaded_file_mi:
+
+    try:
+        # =================================================
+        # LOAD REAL DATA
+        # =================================================
+        df_real_raw = pd.read_excel(uploaded_file_mi)
+
+        if "Datetime" not in df_real_raw.columns:
+            st.error("❌ Serve colonna Datetime")
+            st.stop()
+
+        df_real_raw["Datetime"] = pd.to_datetime(df_real_raw["Datetime"])
+
+        st.success("✅ MI reali caricati")
+
+        # =================================================
+        # LOAD FORECAST HISTORY
+        # =================================================
+        try:
+            df_forecast = load_from_dropbox(
+                MI_FORECAST_HISTORY_LONG,
+                DROPBOX_TOKEN
+            ).copy()
+
+        except:
+            st.error("❌ Forecast history MI non trovata")
+            st.stop()
+
+        df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
+
+        # =================================================
+        # LOOP MERCATI
+        # =================================================
+        all_eval = []
+
+        for col in df_real_raw.columns:
+
+            if col == "Datetime":
+                continue
+
+            nome_df = make_market_key(col)
+
+            df_pred = df_forecast[
+                df_forecast["nome_df"] == nome_df
+            ].copy()
+
+            if df_pred.empty:
+                continue
+
+            df_tmp = df_pred.merge(
+                df_real_raw[["Datetime", col]],
+                on="Datetime",
+                how="inner"
+            )
+
+            df_tmp = df_tmp.rename(columns={col: "real"})
+
+            if df_tmp.empty:
+                continue
+
+            df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
+            df_tmp["abs_error"] = df_tmp["error"].abs()
+            df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
+
+            df_tmp["market"] = col
+
+            all_eval.append(df_tmp)
+
+        if not all_eval:
+            st.warning("⚠️ Nessun matching forecast vs real")
+            st.stop()
+
+        df_eval = pd.concat(all_eval, ignore_index=True)
+
+        # =================================================
+        # SAVE ERROR HISTORY
+        # =================================================
+        if os.path.exists(MI_ERROR_PATH):
+            df_old = pd.read_parquet(MI_ERROR_PATH)
+            df_all = pd.concat([df_old, df_eval], ignore_index=True)
+        else:
+            df_all = df_eval.copy()
+
+        df_all = df_all.sort_values("Datetime")
+        df_all.to_parquet(MI_ERROR_PATH)
+
+        upload_to_dropbox(
+            MI_ERROR_PATH,
+            MI_FORECAST_ERRORS_PATH,
+            DROPBOX_TOKEN
+        )
+
+        st.success("✅ MI error history aggiornata")
+
+        # =================================================
+        # METRICS
+        # =================================================
+        df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
+        df_all["rmse_rolling"] = (
+            df_all["error"]**2
+        ).rolling(96).mean()**0.5
+
+        # =================================================
+        # UI
+        # =================================================
+        st.subheader("📊 Metriche")
+
+        c1, c2 = st.columns(2)
+
+        c1.metric("MAE", round(df_all["mae_rolling"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_all["rmse_rolling"].iloc[-1], 2))
+
+        st.line_chart(df_all[["mae_rolling", "rmse_rolling"]].dropna())
+
+        # =================================================
+        # DRIFT ALERT
+        # =================================================
+        mape = df_all["error_abs_perc"].mean() * 100
+
+        st.subheader("📊 MAPE")
+        st.write(f"{mape:.2f}%")
+
+        if mape > 25:
+            st.error("🚨 Drift forte → retraining urgente")
+        elif mape > 18:
+            st.warning("⚠️ Drift moderato → monitorare")
+        elif mape > 12:
+            st.info("🟡 Modello ok ma migliorabile")
+        else:
+            st.success("✅ Modello stabile")
+
+        # =================================================
+        # ERROR DISTRIBUTION
+        # =================================================
+        import plotly.express as px
+
+        df_all["hour"] = df_all["Datetime"].dt.hour
+
+        fig = px.box(
+            df_all,
+            x="hour",
+            y="error",
+            color="market",
+            title="Errore per ora"
+        )
+
+        st.plotly_chart(fig)
+
+        # =================================================
+        # DOWNLOAD
+        # =================================================
+        st.download_button(
+            label="⬇️ Scarica error history MI",
+            data=df_all.to_csv(index=False),
+            file_name="mi_error_history.csv"
+        )
+
+    except Exception as e:
+        st.error(f"❌ Errore monitoring MI: {e}")
+        st.code(traceback.format_exc())
