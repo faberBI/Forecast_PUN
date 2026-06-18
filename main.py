@@ -1096,7 +1096,6 @@ ERROR_PATH = "dati_output/error_history.parquet"
 
 from io import BytesIO
 
-
 # =========================================================
 # 1. UPLOAD FILE PUN REALE
 # =========================================================
@@ -1569,13 +1568,18 @@ run_pipeline = st.button("🚀 Run MI Pipeline (Forecast + Monitoring)")
 # =========================================================
 # PIPELINE COMPLETA
 # =========================================================
+# =========================================================
+# PIPELINE COMPLETA
+# =========================================================
 if run_pipeline:
 
-    try:
-        if not dfs_mi:
-            st.error("❌ Nessun dataset MI")
-            st.stop()
+    st.subheader("🚀 Avvio pipeline MI")
 
+    if not dfs_mi:
+        st.error("❌ Nessun dataset MI caricato")
+        st.stop()
+
+    try:
         # =================================================
         # 1️⃣ FORECAST
         # =================================================
@@ -1588,7 +1592,9 @@ if run_pipeline:
 
         meteo = MeteoDownloader()
 
-        with st.spinner("Running forecast..."):
+        st.write("✅ Ingresso forecast OK")
+
+        with st.spinner("🚀 Running forecast MI..."):
 
             df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
                 dfs=dfs_mi,
@@ -1607,9 +1613,15 @@ if run_pipeline:
                 lookback_days=MI_LOOKBACK_DAYS
             )
 
+        if df_long is None or df_long.empty:
+            st.error("❌ Forecast vuoto")
+            st.stop()
+
         df_long["run_id"] = pd.Timestamp.now()
 
         st.success("✅ Forecast completato")
+
+        st.write("📊 Forecast preview")
         st.dataframe(df_long.tail(100))
 
         # =================================================
@@ -1620,14 +1632,18 @@ if run_pipeline:
         uploaded_file = st.file_uploader(
             "Carica Excel MI reali",
             type=["xlsx"],
-            key="pipeline"
+            key="pipeline_upload"
         )
 
         if uploaded_file is None:
-            st.info("⬆️ Carica file reale per continuare")
+            st.info("⬆️ Carica il file reale per continuare")
             st.stop()
 
-        df_real = pd.read_excel(uploaded_file)
+        try:
+            df_real = pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.error(f"❌ Errore lettura file: {e}")
+            st.stop()
 
         # =================================================
         # BUILD DATETIME
@@ -1653,29 +1669,32 @@ if run_pipeline:
             st.stop()
 
         df_real = df_real.sort_values("Datetime")
+        df_real.columns = [str(c).strip() for c in df_real.columns]
 
         # =================================================
-        # 3️⃣ LOAD HISTORY (ORA ESISTE)
+        # 3️⃣ LOAD FORECAST HISTORY
         # =================================================
         st.subheader("📉 Step 3: Monitoring")
 
-        df_forecast = load_from_dropbox(
-            MI_FORECAST_HISTORY_LONG,
-            DROPBOX_TOKEN
-        ).copy()
+        try:
+            df_forecast = load_from_dropbox(
+                MI_FORECAST_HISTORY_LONG,
+                DROPBOX_TOKEN
+            ).copy()
+        except Exception as e:
+            st.error(f"❌ Errore caricamento forecast history: {e}")
+            st.stop()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
 
         # =================================================
-        # MERCATI
+        # MERGE
         # =================================================
         markets = [
             "Calabria", "Centro Nord", "Centro Sud",
             "Nord", "Sardegna", "Sicilia",
             "Sud", "Italia Coupling"
         ]
-
-        df_real.columns = [str(c).strip() for c in df_real.columns]
 
         all_eval = []
 
@@ -1690,6 +1709,9 @@ if run_pipeline:
                 df_forecast["nome_df"] == nome_df
             ]
 
+            if df_pred.empty:
+                continue
+
             df_tmp = df_pred.merge(
                 df_real[["Datetime", col]],
                 on="Datetime",
@@ -1701,7 +1723,6 @@ if run_pipeline:
 
             df_tmp = df_tmp.rename(columns={col: "real"})
 
-            # ERRORI
             df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
             df_tmp["abs_error"] = df_tmp["error"].abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
@@ -1718,8 +1739,10 @@ if run_pipeline:
         # =================================================
         # SAVE ERROR HISTORY
         # =================================================
+        ERROR_PATH = "dati_output/mi_error_history.parquet"
+
         try:
-            df_old = pd.read_parquet("dati_output/mi_error_history.parquet")
+            df_old = pd.read_parquet(ERROR_PATH)
             df_all = pd.concat([df_old, df_eval], ignore_index=True)
         except:
             df_all = df_eval.copy()
@@ -1734,13 +1757,21 @@ if run_pipeline:
             .reset_index(drop=True)
         )
 
-        df_all.to_parquet("dati_output/mi_error_history.parquet")
+        df_all.to_parquet(ERROR_PATH)
 
         upload_to_dropbox(
-            "dati_output/mi_error_history.parquet",
+            ERROR_PATH,
             MI_FORECAST_ERRORS_PATH,
             DROPBOX_TOKEN
         )
+
+        st.success("✅ Monitoring completato")
+
+    except Exception as e:
+        st.error("❌ ERRORE PIPELINE MI")
+        st.write(type(e).__name__, str(e))
+        st.code(traceback.format_exc())
+        st.stop()
 
         # =================================================
         # METRICS
