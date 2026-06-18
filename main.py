@@ -1372,13 +1372,32 @@ if uploaded_file_mi:
         # =================================================
         df_real_raw = pd.read_excel(uploaded_file_mi)
 
-        if "Datetime" not in df_real_raw.columns:
-            st.error("❌ Serve colonna Datetime")
+        # =========================
+        # BUILD DATETIME (TERNA)
+        # =========================
+        if {"Data", "Ora", "Periodo"}.issubset(df_real_raw.columns):
+
+            df_real_raw["Data"] = pd.to_datetime(df_real_raw["Data"], dayfirst=True)
+
+            minute_map = {1: 0, 2: 15, 3: 30, 4: 45}
+            df_real_raw["minute"] = df_real_raw["Periodo"].map(minute_map)
+
+            df_real_raw["Datetime"] = (
+                df_real_raw["Data"]
+                + pd.to_timedelta(df_real_raw["Ora"] - 1, unit="h")
+                + pd.to_timedelta(df_real_raw["minute"], unit="m")
+            )
+
+        elif "Datetime" in df_real_raw.columns:
+            df_real_raw["Datetime"] = pd.to_datetime(df_real_raw["Datetime"])
+
+        else:
+            st.error("❌ Serve Datetime oppure Data/Ora/Periodo")
             st.stop()
 
-        df_real_raw["Datetime"] = pd.to_datetime(df_real_raw["Datetime"])
+        df_real_raw = df_real_raw.sort_values("Datetime")
 
-        st.success("✅ MI reali caricati")
+        st.success("✅ MI reali caricati e trasformati")
 
         # =================================================
         # LOAD FORECAST HISTORY
@@ -1389,20 +1408,37 @@ if uploaded_file_mi:
                 DROPBOX_TOKEN
             ).copy()
 
-        except:
-            st.error("❌ Forecast history MI non trovata")
+        except Exception:
+            st.error("❌ Forecast history MI non trovata su Dropbox")
             st.stop()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
 
         # =================================================
-        # LOOP MERCATI
+        # FILTRO SOLO MERCATI RILEVANTI
         # =================================================
+        markets_to_use = [
+            "Calabria",
+            "Centro Nord",
+            "Centro Sud",
+            "Nord",
+            "Sardegna",
+            "Sicilia",
+            "Sud",
+            "Italia Coupling"
+        ]
+
+        # pulizia nomi colonne (spazi doppi ecc)
+        df_real_raw.columns = [str(c).strip() for c in df_real_raw.columns]
+
         all_eval = []
 
-        for col in df_real_raw.columns:
+        # =================================================
+        # LOOP MERCATI
+        # =================================================
+        for col in markets_to_use:
 
-            if col == "Datetime":
+            if col not in df_real_raw.columns:
                 continue
 
             nome_df = make_market_key(col)
@@ -1420,11 +1456,14 @@ if uploaded_file_mi:
                 how="inner"
             )
 
-            df_tmp = df_tmp.rename(columns={col: "real"})
-
             if df_tmp.empty:
                 continue
 
+            df_tmp = df_tmp.rename(columns={col: "real"})
+
+            # =================================================
+            # ERROR CALCULATION
+            # =================================================
             df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
             df_tmp["abs_error"] = df_tmp["error"].abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
@@ -1445,9 +1484,8 @@ if uploaded_file_mi:
         try:
             df_old = pd.read_parquet(MI_ERROR_PATH)
             df_all = pd.concat([df_old, df_eval], ignore_index=True)
-        except:
+        except Exception:
             df_all = df_eval.copy()
-
 
         df_all = df_all.sort_values("Datetime")
         df_all.to_parquet(MI_ERROR_PATH)
@@ -1464,28 +1502,28 @@ if uploaded_file_mi:
         # METRICS
         # =================================================
         df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
-        df_all["rmse_rolling"] = (
-            df_all["error"]**2
-        ).rolling(96).mean()**0.5
+        df_all["rmse_rolling"] = (df_all["error"]**2).rolling(96).mean()**0.5
 
         # =================================================
-        # UI
+        # UI METRICS
         # =================================================
-        st.subheader("📊 Metriche")
+        st.subheader("📊 Metriche ultime")
 
         c1, c2 = st.columns(2)
 
         c1.metric("MAE", round(df_all["mae_rolling"].iloc[-1], 2))
         c2.metric("RMSE", round(df_all["rmse_rolling"].iloc[-1], 2))
 
-        st.line_chart(df_all[["mae_rolling", "rmse_rolling"]].dropna())
+        st.line_chart(
+            df_all[["mae_rolling", "rmse_rolling"]].dropna()
+        )
 
         # =================================================
         # DRIFT ALERT
         # =================================================
         mape = df_all["error_abs_perc"].mean() * 100
 
-        st.subheader("📊 MAPE")
+        st.subheader("📊 MAPE globale")
         st.write(f"{mape:.2f}%")
 
         if mape > 25:
@@ -1509,10 +1547,10 @@ if uploaded_file_mi:
             x="hour",
             y="error",
             color="market",
-            title="Errore per ora"
+            title="Errore per ora del giorno"
         )
 
-        st.plotly_chart(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
         # =================================================
         # DOWNLOAD
