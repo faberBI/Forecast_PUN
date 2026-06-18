@@ -1155,6 +1155,8 @@ MI_LOOKBACK_DAYS = MI["forecast"]["lookback_days"]
 
 colonne_analisi_mi = MI["mercati"]
 
+st.write('MI_DATASET_DIR', MI_DATASETS_DIR)
+st.write("MODELS DIR:", MI_MODELS_DIR)
 
 # =========================================================
 # HELPERS
