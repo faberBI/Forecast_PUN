@@ -1295,10 +1295,10 @@ with st.expander("Check JSON"):
 with st.expander("Preview dataset"):
     
     if dfs_mi:
-        keys = list(dfs_mi.keys())
-    if keys:
-        mkt = st.selectbox("Mercato", keys)
+        mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
         st.dataframe(dfs_mi[mkt].tail(50))
+    else:
+        st.warning("Niente dataset")
 
 
 
