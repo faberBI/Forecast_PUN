@@ -1128,11 +1128,14 @@ if uploaded_file is not None:
         st.code(traceback.format_exc(), language="python")
 
 
+
 # =========================================================
 # CONFIG
 # =========================================================
+
 def dbx_path(*parts):
     return "/" + "/".join([str(p).strip("/") for p in parts])
+
 
 MI_DROPBOX_ROOT = MI["dropbox"]["root"]
 
@@ -1156,15 +1159,21 @@ colonne_analisi_mi = MI["mercati"]
 # HELPERS
 # =========================================================
 
-def make_market_key(nome: str) -> str:
+def make_market_key(nome: str):
     return (
         str(nome)
         .lower()
-        .replace(" ", "_")
         .replace("(", "")
         .replace(")", "")
+        .replace("  ", " ")
+        .replace(" ", "_")
+        .replace("__", "_")
     )
 
+
+# =========================================================
+# LOAD DATASETS
+# =========================================================
 
 @st.cache_data(show_spinner=False)
 def load_mi_datasets_from_dropbox_cached(dropbox_token: str):
@@ -1179,47 +1188,70 @@ def load_mi_datasets_from_dropbox_cached(dropbox_token: str):
         try:
             df = load_from_dropbox(dropbox_path, dropbox_token).copy()
 
+            # Datetime handling
             if "Datetime" in df.columns:
                 df["Datetime"] = pd.to_datetime(df["Datetime"])
-                df = df.set_index("Datetime").sort_index()
+                df = df.set_index("Datetime")
 
             df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
             df = df[~df.index.duplicated(keep="last")]
 
+            # Frequenza
             try:
                 df = df.asfreq("15min")
             except:
                 pass
 
+            # Clean dati
             df = df.replace([np.inf, -np.inf], np.nan).ffill()
 
             key = make_market_key(nome)
             dfs_mi[key] = df
 
         except Exception as e:
-            print(f"⚠️ Errore MI {dropbox_path}: {e}")
+            print(f"⚠️ Errore loading {dropbox_path}: {e}")
 
     return dfs_mi
 
+
+# =========================================================
+# LOAD JSON MODELS
+# =========================================================
 
 def load_mi_json_from_dropbox(dropbox_token: str):
 
     dbx = dropbox.Dropbox(dropbox_token)
 
-    _, res = dbx.files_download(MI_RESULTS_JSON_PATH)
-    return json.loads(res.content.decode("utf-8"))
+    try:
+        _, res = dbx.files_download(MI_RESULTS_JSON_PATH)
+        return json.loads(res.content.decode("utf-8"))
 
+    except Exception as e:
+        raise RuntimeError(f"Errore lettura JSON MI: {e}")
+
+
+# =========================================================
+# CHECK JSON VS DATASETS
+# =========================================================
 
 def check_mi_json_vs_dfs_keys(dropbox_token, dfs_mi):
 
     results = load_mi_json_from_dropbox(dropbox_token)
 
+    json_keys = set(results.keys())
+    dfs_keys = set(dfs_mi.keys())
+
     return {
-        "common": list(set(results.keys()) & set(dfs_mi.keys())),
-        "json_not_in_dfs": list(set(results.keys()) - set(dfs_mi.keys())),
-        "dfs_not_in_json": list(set(dfs_mi.keys()) - set(results.keys()))
+        "common": sorted(json_keys & dfs_keys),
+        "json_not_in_dfs": sorted(json_keys - dfs_keys),
+        "dfs_not_in_json": sorted(dfs_keys - json_keys)
     }
 
+
+# =========================================================
+# PLOT FORECAST
+# =========================================================
 
 def plot_mi(df_long, nome_df, target):
 
@@ -1231,16 +1263,110 @@ def plot_mi(df_long, nome_df, target):
     if tmp.empty:
         return None
 
+    tmp["Datetime"] = pd.to_datetime(tmp["Datetime"])
+    tmp = tmp.sort_values("Datetime")
+
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=tmp["Datetime"],
         y=tmp["pred"],
-        mode="lines",
+        mode="lines+markers",
         name=f"{nome_df} / {target}"
     ))
 
+    fig.update_layout(
+        title=f"{nome_df} - {target}",
+        template="plotly_white"
+    )
+
     return fig
+
+
+# =========================================================
+# DEBUG DROPBOX
+# =========================================================
+
+def debug_mi_dropbox(dropbox_token: str):
+
+    st.subheader("🧪 Debug MI Dropbox")
+
+    dbx = dropbox.Dropbox(dropbox_token)
+
+    report = {
+        "datasets_ok": [],
+        "datasets_missing": [],
+        "models_ok": [],
+        "models_missing": [],
+        "payload_errors": [],
+    }
+
+    # DATASETS
+    for nome in colonne_analisi_mi:
+        file_name = f"MI_{nome}.parquet"
+        path = f"{MI_DATASETS_DIR}/{file_name}"
+
+        try:
+            dbx.files_get_metadata(path)
+            report["datasets_ok"].append(file_name)
+        except:
+            report["datasets_missing"].append(file_name)
+
+    # JSON
+    try:
+        results = load_mi_json_from_dropbox(dropbox_token)
+        st.success("✅ JSON OK")
+    except Exception as e:
+        st.error(f"❌ JSON ERROR: {e}")
+        return
+
+    # MODELS
+    for nome_df, targets in results.items():
+        for target, res in targets.items():
+
+            if res.get("status") != "ok":
+                continue
+
+            model_path = res.get("model_path")
+
+            if not model_path:
+                report["models_missing"].append(f"{nome_df}/{target}")
+                continue
+
+            if not model_path.startswith("/"):
+                model_path = f"{MI_MODELS_DIR}/{model_path}"
+
+            try:
+                _, file_res = dbx.files_download(model_path)
+                report["models_ok"].append(model_path)
+
+                payload = joblib.load(io.BytesIO(file_res.content))
+
+                for key in ["forecaster", "selected_exog", "target"]:
+                    if key not in payload:
+                        report["payload_errors"].append(
+                            f"{model_path} missing {key}"
+                        )
+
+            except:
+                report["models_missing"].append(model_path)
+
+    # OUTPUT
+    st.write("✅ Dataset OK:", len(report["datasets_ok"]))
+    st.write("❌ Dataset missing:", report["datasets_missing"])
+    st.write("✅ Models OK:", len(report["models_ok"]))
+    st.write("❌ Models missing:", report["models_missing"])
+
+    if report["payload_errors"]:
+        st.warning("⚠️ Payload errors:")
+        st.write(report["payload_errors"])
+
+    if not report["datasets_missing"] and not report["models_missing"]:
+        st.success("✅ Sistema MI pronto")
+    else:
+        st.error("❌ Problemi trovati")
+
+    return report
 
 
 # =========================================================
