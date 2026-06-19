@@ -835,8 +835,7 @@ try:
 except:
     st.warning("⚠️ Nessun dato disponibile su Dropbox")
 
-#
-from pathlib import Path
+
 # =========================================================
 # LOAD MODEL FROM DROPBOX
 # =========================================================
@@ -1500,6 +1499,7 @@ st.divider()
 st.header("⚡ MI Forecast + Monitoring")
 
 DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", "")
+LOOKBACK_DAYS = 10
 
 if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
