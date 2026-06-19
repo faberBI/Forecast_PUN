@@ -1536,17 +1536,6 @@ except Exception:
 
 
 # =========================================================
-# CHECK JSON
-# =========================================================
-with st.expander("🔎 Check JSON MI"):
-    try:
-        check = check_mi_json_vs_dfs_keys(DROPBOX_TOKEN, dfs_mi)
-        st.json(check)
-    except Exception as e:
-        st.warning(e)
-
-
-# =========================================================
 # PREVIEW DATASET
 # =========================================================
 with st.expander("📚 Preview dataset"):
