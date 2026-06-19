@@ -1552,7 +1552,7 @@ with st.expander("📚 Preview dataset"):
 run_pipeline = st.button("🚀 Run MI Pipeline (Forecast + Monitoring)")
 
 # =========================================================
-# PIPELINE COMPLETA
+# PIPELINE
 # =========================================================
 if run_pipeline:
 
@@ -1575,8 +1575,6 @@ if run_pipeline:
 
         meteo = MeteoDownloader()
 
-        st.write("✅ Ingresso forecast OK")
-
         with st.spinner("🚀 Running forecast MI..."):
 
             df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
@@ -1596,22 +1594,15 @@ if run_pipeline:
                 lookback_days=MI_LOOKBACK_DAYS
             )
 
-        #
         if df_errors is not None and not df_errors.empty:
             st.error("❌ ERRORI MODELLI")
             st.dataframe(df_errors)
-            
-        # 🟡 forecast vuoto
+
         if df_long is None or df_long.empty:
-            st.error("❌ Forecast vuoto: tutti i modelli sono falliti")
+            st.error("❌ Forecast vuoto")
             st.stop()
 
-
-        df_long["run_id"] = pd.Timestamp.now()
-
         st.success("✅ Forecast completato")
-
-        st.write("📊 Forecast preview")
         st.dataframe(df_long.tail(100))
 
         # =================================================
@@ -1626,60 +1617,42 @@ if run_pipeline:
         )
 
         if uploaded_file is None:
-            st.info("⬆️ Carica il file reale per continuare")
+            st.info("⬆️ Carica il file reale")
             st.stop()
 
-        try:
-            df_real = pd.read_excel(uploaded_file)
-        except Exception as e:
-            st.error(f"❌ Errore lettura file: {e}")
-            st.stop()
+        df_real = pd.read_excel(uploaded_file)
 
-        # =================================================
-        # BUILD DATETIME
-        # =================================================
+        # DATETIME
         if {"Data", "Ora", "Periodo"}.issubset(df_real.columns):
 
             df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
 
             minute_map = {1: 0, 2: 15, 3: 30, 4: 45}
-            df_real["minute"] = df_real["Periodo"].map(minute_map)
 
             df_real["Datetime"] = (
                 df_real["Data"]
                 + pd.to_timedelta(df_real["Ora"] - 1, unit="h")
-                + pd.to_timedelta(df_real["minute"], unit="m")
+                + pd.to_timedelta(df_real["Periodo"].map(minute_map), unit="m")
             )
-
-        elif "Datetime" in df_real.columns:
-            df_real["Datetime"] = pd.to_datetime(df_real["Datetime"])
 
         else:
             st.error("❌ Formato file non valido")
             st.stop()
 
         df_real = df_real.sort_values("Datetime")
-        df_real.columns = [str(c).strip() for c in df_real.columns]
 
         # =================================================
-        # 3️⃣ LOAD FORECAST HISTORY
+        # 3️⃣ MONITORING
         # =================================================
         st.subheader("📉 Step 3: Monitoring")
 
-        try:
-            df_forecast = load_from_dropbox(
-                MI_FORECAST_HISTORY_LONG,
-                DROPBOX_TOKEN
-            ).copy()
-        except Exception as e:
-            st.error(f"❌ Errore caricamento forecast history: {e}")
-            st.stop()
+        df_forecast = load_from_dropbox(
+            MI_FORECAST_HISTORY_LONG,
+            DROPBOX_TOKEN
+        ).copy()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
 
-        # =================================================
-        # MERGE
-        # =================================================
         markets = [
             "Calabria", "Centro Nord", "Centro Sud",
             "Nord", "Sardegna", "Sicilia",
@@ -1695,7 +1668,7 @@ if run_pipeline:
 
             nome_df = make_market_key(col)
 
-            df_pred = df_forecast.loc[
+            df_pred = df_forecast[
                 df_forecast["nome_df"] == nome_df
             ]
 
@@ -1704,8 +1677,7 @@ if run_pipeline:
 
             df_tmp = df_pred.merge(
                 df_real[["Datetime", col]],
-                on="Datetime",
-                how="inner"
+                on="Datetime"
             )
 
             if df_tmp.empty:
@@ -1716,7 +1688,6 @@ if run_pipeline:
             df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
             df_tmp["abs_error"] = df_tmp["error"].abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
-            df_tmp["market"] = col
 
             all_eval.append(df_tmp)
 
@@ -1724,64 +1695,26 @@ if run_pipeline:
             st.warning("⚠️ Nessun match forecast vs real")
             st.stop()
 
-        df_eval = pd.concat(all_eval, ignore_index=True)
+        df_eval = pd.concat(all_eval)
 
         # =================================================
-        # SAVE ERROR HISTORY
+        # METRICS ✅
         # =================================================
-        ERROR_PATH = "dati_output/mi_error_history.parquet"
-
-        try:
-            df_old = pd.read_parquet(ERROR_PATH)
-            df_all = pd.concat([df_old, df_eval], ignore_index=True)
-        except:
-            df_all = df_eval.copy()
-
-        df_all = (
-            df_all
-            .sort_values("Datetime")
-            .drop_duplicates(
-                subset=["Datetime", "nome_df", "target"],
-                keep="last"
-            )
-            .reset_index(drop=True)
-        )
-
-        df_all.to_parquet(ERROR_PATH)
-
-        upload_to_dropbox(
-            ERROR_PATH,
-            MI_FORECAST_ERRORS_PATH,
-            DROPBOX_TOKEN
-        )
-
-        st.success("✅ Monitoring completato")
-
-    except Exception as e:
-        st.error("❌ ERRORE PIPELINE MI")
-        st.write(type(e).__name__, str(e))
-        st.code(traceback.format_exc())
-        st.stop()
-
-        # =================================================
-        # METRICS
-        # =================================================
-        df_all["mae"] = df_all["abs_error"].rolling(96).mean()
-        df_all["rmse"] = (df_all["error"]**2).rolling(96).mean()**0.5
+        df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
+        df_eval["rmse"] = (df_eval["error"]**2).rolling(96).mean()**0.5
 
         st.subheader("📊 Metriche")
 
         c1, c2 = st.columns(2)
-        c1.metric("MAE", round(df_all["mae"].iloc[-1], 2))
-        c2.metric("RMSE", round(df_all["rmse"].iloc[-1], 2))
+        c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
 
-        st.line_chart(df_all[["mae", "rmse"]].dropna())
+        st.line_chart(df_eval[["mae", "rmse"]].dropna())
 
         # =================================================
         # DRIFT
         # =================================================
-        mape = df_all["error_abs_perc"].mean() * 100
-        st.write(f"MAPE: {mape:.2f}%")
+        mape = df_eval["error_abs_perc"].mean() * 100
 
         if mape > 25:
             st.error("🚨 Drift forte")
@@ -1793,5 +1726,7 @@ if run_pipeline:
         st.success("✅ Pipeline completata")
 
     except Exception as e:
-        st.error(e)
+        st.error("❌ ERRORE PIPELINE MI")
+        st.write(type(e).__name__, str(e))
+        import traceback
         st.code(traceback.format_exc())
