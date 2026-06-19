@@ -1612,9 +1612,16 @@ if run_pipeline:
                 lookback_days=MI_LOOKBACK_DAYS
             )
 
+        #
+        if df_errors is not None and not df_errors.empty:
+            st.error("❌ ERRORI MODELLI")
+            st.dataframe(df_errors)
+            
+        # 🟡 forecast vuoto
         if df_long is None or df_long.empty:
-            st.error("❌ Forecast vuoto")
+            st.error("❌ Forecast vuoto: tutti i modelli sono falliti")
             st.stop()
+
 
         df_long["run_id"] = pd.Timestamp.now()
 
