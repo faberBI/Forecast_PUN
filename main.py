@@ -1499,8 +1499,6 @@ def debug_mi_dropbox(dropbox_token: str):
 st.divider()
 st.header("⚡ MI Forecast + Monitoring")
 
-st.write("JSON PATH:", MI_RESULTS_JSON_PATH)
-
 DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", "")
 
 if not DROPBOX_TOKEN:
@@ -1564,10 +1562,11 @@ with st.expander("📚 Preview dataset"):
 # =========================================================
 run_pipeline = st.button("🚀 Run MI Pipeline (Forecast + Monitoring)")
 
+st.write("DFS KEYS:", list(dfs_mi.keys()))
 
-# =========================================================
-# PIPELINE COMPLETA
-# =========================================================
+results_debug = load_mi_json_from_dropbox(DROPBOX_TOKEN)
+st.write("JSON KEYS:", list(results_debug.keys()))
+
 # =========================================================
 # PIPELINE COMPLETA
 # =========================================================
