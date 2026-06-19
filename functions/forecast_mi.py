@@ -358,6 +358,27 @@ def forecast_next_96_single_mi_model_from_dropbox(
 # ==========================================================
 # FORECAST ALL MI MODELS
 # ==========================================================
+def normalize_hist_df(df_hist):
+
+    df = df_hist.copy()
+
+    if "Datetime" in df.columns:
+        df["Datetime"] = pd.to_datetime(df["Datetime"])
+        df = df.set_index("Datetime")
+
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+
+    try:
+        df = df.asfreq("15min")
+    except Exception:
+        pass
+
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.ffill()
+
+    return df
 
 def forecast_next_96_all_mi_models_dropbox(
     dfs,
