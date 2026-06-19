@@ -4,10 +4,706 @@ import json
 import joblib
 import dropbox
 import pandas as pd
-import streamlit as st
+import numpy as np
+import warnings
+
+warnings.filterwarnings("ignore")
 
 
+# ==========================================================
+# DEFAULT CONFIG
+# ==========================================================
 
+FORECAST_STEPS = 96
+FORECAST_FREQ = "15min"
+LOOKBACK_DAYS = 10
+
+# ==========================================================
+# FORECAST ALL MI MODELS
+# ==========================================================
+def normalize_hist_df(df_hist):
+    """
+([np.inf, -np.inf], np.nan)    Normalizza storico modello:
+    df = df.ffill()
+
+    return df
+    - Datetime come index
+    - frequenza 15min
+    - ordinamento
+    - ffill minimo
+    """
+
+    df = df_hist.copy()
+
+    if "Datetime" in df.columns:
+        df["Datetime"] = pd.to_datetime(df["Datetime"])
+        df = df.set_index("Datetime")
+
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+
+    try:
+        df = df.asfreq("15min")
+    except Exception:
+        pass
+
+def add_temporal_features_like_training(df):
+    """
+    Aggiunge le feature temporali esattamente come nella tua classe:
+    hour, minute, quarter, quarter_of_day, day_of_week,
+    day_of_year, week_of_year, month, year, is_weekend,
+    hour_sin/cos, dow_sin/cos, doy_sin/cos, month_sin/cos,
+    is_holiday, is_bridge_day.
+    """
+
+    df = df.copy()
+
+    if "Datetime" not in df.columns:
+        df["Datetime"] = pd.to_datetime(df.index)
+
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+
+    df["Data"] = df["Datetime"].dt.normalize()
+
+    df["hour"] = df["Datetime"].dt.hour
+    df["minute"] = df["Datetime"].dt.minute
+    df["quarter"] = df["minute"] // 15
+
+    df["quarter_of_day"] = (
+        df["hour"] * 4 + df["quarter"]
+    )
+
+    df["day_of_week"] = df["Datetime"].dt.dayofweek
+    df["day_of_year"] = df["Datetime"].dt.dayofyear
+
+    df["week_of_year"] = (
+        df["Datetime"]
+        .dt.isocalendar()
+        .week
+        .astype(int)
+    )
+
+    df["month"] = df["Datetime"].dt.month
+    df["year"] = df["Datetime"].dt.year
+
+    df["is_weekend"] = (
+        df["day_of_week"] >= 5
+    ).astype(int)
+
+    df["hour_sin"] = np.sin(
+        2 * np.pi * df["quarter_of_day"] / 96
+    )
+
+    df["hour_cos"] = np.cos(
+        2 * np.pi * df["quarter_of_day"] / 96
+    )
+
+    df["dow_sin"] = np.sin(
+        2 * np.pi * df["day_of_week"] / 7
+    )
+
+    df["dow_cos"] = np.cos(
+        2 * np.pi * df["day_of_week"] / 7
+    )
+
+    df["doy_sin"] = np.sin(
+        2 * np.pi * df["day_of_year"] / 365
+    )
+
+    df["doy_cos"] = np.cos(
+        2 * np.pi * df["day_of_year"] / 365
+    )
+
+    df["month_sin"] = np.sin(
+        2 * np.pi * df["month"] / 12
+    )
+
+    df["month_cos"] = np.cos(
+        2 * np.pi * df["month"] / 12
+    )
+
+    it_holidays = holidays.IT()
+
+    df["is_holiday"] = (
+        df["Data"]
+        .dt.date
+        .isin(it_holidays)
+        .astype(int)
+    )
+
+    df["is_bridge_day"] = (
+        df["Data"]
+        .dt.date
+        .apply(is_bridge_day_italy)
+        .astype(int)
+    )
+
+    return df
+
+def prepare_meteo_range(
+    meteo,
+    locations,
+    start_date,
+    end_date,
+    full_index
+):
+    """
+    Scarica meteo con MeteoDownloader e lo porta a 15min.
+
+    Stessa logica:
+    - download_multi_city
+    - floor("h")
+    - groupby mean
+    - aggregate_meteo
+    - reindex 15min ffill/bfill
+    """
+
+    df = meteo.download_multi_city(
+        locations,
+        start_date,
+        end_date
+    )
+
+    df = df.copy()
+
+    df["Datetime"] = (
+        pd.to_datetime(df["Datetime"])
+        .dt.floor("h")
+    )
+
+    df = (
+        df
+        .groupby("Datetime")
+        .mean(numeric_only=True)
+        .reset_index()
+    )
+
+    df = aggregate_meteo(df)
+
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+
+    df = (
+        df
+        .sort_values("Datetime")
+        .set_index("Datetime")
+    )
+
+    df = df[~df.index.duplicated(keep="last")]
+
+    df = (
+        df
+        .reindex(full_index)
+        .ffill()
+        .bfill()
+    )
+
+    return df
+
+def prepare_terna_actual_range(
+    terna,
+    start_date_terna,
+    end_date_terna,
+    zone="Italy",
+    shift_steps=1
+):
+    """
+    Scarica Terna ACTUAL fino a oggi.
+
+    Logica:
+    - total_load
+    - market_load
+    - forecast_load
+    - generation Wind/Solar/Hydro actual
+    - conversione MW -> GWh
+    - feature:
+        load_ramp_1h
+        load_forecast_error
+        renewable_share
+        net_load_proxy
+    - shift anti leakage
+    """
+
+    def clean(df):
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        return terna.clean_terna_df(df)
+
+    dfs = []
+
+    # ======================================================
+    # TOTAL LOAD
+    # ======================================================
+
+    try:
+        load = clean(
+            terna.get_total_load(
+                start_date_terna,
+                end_date_terna,
+                zone=zone
+            )
+        )
+
+        if not load.empty:
+            dfs.append(load)
+
+    except Exception as e:
+        print(f"⚠️ Terna total_load non disponibile: {e}")
+
+    # ======================================================
+    # MARKET LOAD
+    # ======================================================
+
+    try:
+        market = clean(
+            terna.get_market_load(
+                start_date_terna,
+                end_date_terna,
+                zone=zone
+            )
+        )
+
+        if not market.empty:
+            dfs.append(market)
+
+    except Exception as e:
+        print(f"⚠️ Terna market_load non disponibile: {e}")
+
+    # ======================================================
+    # FORECAST LOAD
+    # ======================================================
+
+    try:
+        forecast_load = clean(
+            terna.get_forecast_load(
+                start_date_terna,
+                end_date_terna,
+                zone=zone
+            )
+        )
+
+        if not forecast_load.empty:
+            dfs.append(forecast_load)
+
+    except Exception as e:
+        print(f"⚠️ Terna forecast_load non disponibile: {e}")
+
+    # ======================================================
+    # GENERATION WIND / SOLAR / HYDRO
+    # ======================================================
+
+    try:
+        wind = clean(
+            terna.get_generation(
+                start_date_terna,
+                end_date_terna,
+                "Wind"
+            )
+        ).rename(
+            columns={"actual_generation_MW": "wind_generation_MW"}
+        )
+
+        if not wind.empty:
+            dfs.append(wind)
+
+    except Exception as e:
+        print(f"⚠️ Terna Wind generation non disponibile: {e}")
+
+    try:
+        solar = clean(
+            terna.get_generation(
+                start_date_terna,
+                end_date_terna,
+                "Photovoltaic"
+            )
+        ).rename(
+            columns={"actual_generation_MW": "solar_generation_MW"}
+        )
+
+        if not solar.empty:
+            dfs.append(solar)
+
+    except Exception as e:
+        print(f"⚠️ Terna Solar generation non disponibile: {e}")
+
+    try:
+        hydro = clean(
+            terna.get_generation(
+                start_date_terna,
+                end_date_terna,
+                "Hydro"
+            )
+        ).rename(
+            columns={"actual_generation_MW": "hydro_generation_MW"}
+        )
+
+        if not hydro.empty:
+            dfs.append(hydro)
+
+    except Exception as e:
+        print(f"⚠️ Terna Hydro generation non disponibile: {e}")
+
+    if len(dfs) == 0:
+        return pd.DataFrame()
+
+    # ======================================================
+    # MERGE OUTER SU date
+    # ======================================================
+
+    base = dfs[0]
+
+    for tmp in dfs[1:]:
+        base = base.merge(
+            tmp,
+            on="date",
+            how="outer"
+        )
+
+    base = base.loc[:, ~base.columns.duplicated()]
+    base["date"] = pd.to_datetime(base["date"]).dt.floor("15min")
+    base = base.sort_values("date")
+
+    # ======================================================
+    # FORCE NUMERIC
+    # ======================================================
+
+    for c in base.columns:
+        if c != "date":
+            base[c] = pd.to_numeric(base[c], errors="coerce")
+
+    # ======================================================
+    # GENERATION GWh
+    # ======================================================
+
+    if "wind_generation_MW" in base.columns:
+        base["actual_generation_GWh"] = mw_to_gwh_15min(
+            base["wind_generation_MW"]
+        )
+
+    if "solar_generation_MW" in base.columns:
+        base["actual_generation_GWh_solar"] = mw_to_gwh_15min(
+            base["solar_generation_MW"]
+        )
+
+    if "hydro_generation_MW" in base.columns:
+        base["actual_generation_GWh_hydro"] = mw_to_gwh_15min(
+            base["hydro_generation_MW"]
+        )
+
+    # ======================================================
+    # FEATURES TERNA
+    # ======================================================
+
+    if "total_load_MW" in base.columns:
+        base["load_ramp_1h"] = (
+            base["total_load_MW"]
+            .diff(4)
+        )
+
+    if (
+        "forecast_total_load_MW" in base.columns
+        and "total_load_MW" in base.columns
+    ):
+        base["load_forecast_error"] = (
+            base["forecast_total_load_MW"]
+            - base["total_load_MW"]
+        )
+
+    if (
+        "actual_generation_GWh_solar" in base.columns
+        and "actual_generation_GWh_hydro" in base.columns
+        and "total_load_MW" in base.columns
+    ):
+        base["renewable_share"] = (
+            base["actual_generation_GWh_solar"]
+            + base["actual_generation_GWh_hydro"]
+        ) / (base["total_load_MW"] + 1e-9)
+
+    if (
+        "total_load_MW" in base.columns
+        and "actual_generation_GWh" in base.columns
+    ):
+        base["net_load_proxy"] = (
+            base["total_load_MW"]
+            - base["actual_generation_GWh"]
+        )
+
+    base["Datetime"] = pd.to_datetime(base["date"])
+
+    keep_cols = [
+        "Datetime",
+        "date",
+        "total_load_MW",
+        "market_load_MW",
+        "forecast_total_load_MW",
+        "forecast_market_load_MW",
+        "actual_generation_GWh",
+        "actual_generation_GWh_solar",
+        "actual_generation_GWh_hydro",
+        "load_ramp_1h",
+        "load_forecast_error",
+        "renewable_share",
+        "net_load_proxy"
+    ]
+
+    base = base[
+        [c for c in keep_cols if c in base.columns]
+    ].copy()
+
+    base = (
+        base
+        .drop_duplicates(subset=["Datetime"])
+        .sort_values("Datetime")
+        .set_index("Datetime")
+    )
+
+    base = base.replace([np.inf, -np.inf], np.nan)
+
+    # shift anti leakage sulle feature Terna
+    base = shift_terna_only(
+        base,
+        shift_steps=shift_steps
+    )
+
+    return base
+
+def extend_terna_to_full_index(terna_df, full_index):
+    """
+    Terna actual disponibile fino a oggi.
+    Per domani: ffill ultimo valore noto.
+    """
+
+    if terna_df is None or terna_df.empty:
+        return pd.DataFrame(index=full_index)
+
+    df = terna_df.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+
+    df = (
+        df
+        .reindex(full_index)
+        .ffill()
+        .bfill()
+    )
+
+    return df
+
+def prepare_commodity_features_range(
+    full_index,
+    start_date=None
+):
+    """
+    Scarica commodity con PUNFeatureEngineering.build_commodity_dataset
+    e applica add_commodity_features.
+
+    Poi porta tutto a 15min e ffill.
+    """
+
+    try:
+        if start_date is None:
+            start_date = full_index.min().strftime("%Y-%m-%d")
+
+        fe = PUNFeatureEngineering(
+            start=start_date,
+            pun_col="dummy"
+        )
+
+        commodities = fe.build_commodity_dataset()
+
+        if commodities is None or commodities.empty:
+            return pd.DataFrame(index=full_index)
+
+        commodities = commodities.copy()
+
+        commodities["Data"] = pd.to_datetime(
+            commodities["Data"]
+        ).dt.normalize()
+
+        base = pd.DataFrame(index=full_index)
+        base["Datetime"] = base.index
+        base["Data"] = base.index.normalize()
+
+        base = (
+            base
+            .reset_index(drop=True)
+            .merge(
+                commodities,
+                on="Data",
+                how="left"
+            )
+            .sort_values("Datetime")
+            .ffill()
+        )
+
+        base = fe.add_commodity_features(base)
+
+        base = (
+            base
+            .set_index("Datetime")
+            .drop(columns=["Data"], errors="ignore")
+            .reindex(full_index)
+            .ffill()
+            .bfill()
+        )
+
+        return base
+
+    except Exception as e:
+        print(f"⚠️ Commodity features non disponibili: {e}")
+        return pd.DataFrame(index=full_index)
+        
+def add_target_features_like_training(df, target_col):
+    """
+    Replica la parte target-based della tua PUNFeatureEngineering:
+
+    - lag_15m, lag_30m, lag_1h, lag_2h, lag_4h
+    - lag_1d, lag_2d, lag_7d
+    - pun_ret_1h, pun_ret_1d, pun_ret_7d
+    - rolling_mean_4h, rolling_mean_24h
+    - rolling_std_24h, rolling_std_7d
+    - rolling_max_24h, rolling_min_24h
+    - high_vol_regime
+    - momentum_4h, momentum_1d
+
+    Nota:
+    sul futuro target_col è NaN. Quindi:
+    - lag_1d/2d/7d sono noti se cadono nello storico.
+    - lag brevi oltre i primi step diventano NaN e poi vengono ffillati.
+    - i lags veri del ForecasterDirect stanno comunque dentro last_window.
+    """
+
+    df = df.copy()
+
+    if target_col not in df.columns:
+        raise ValueError(f"Target '{target_col}' non presente nel dataframe.")
+
+    y = pd.to_numeric(
+        df[target_col],
+        errors="coerce"
+    )
+
+    # ======================================================
+    # LAGS
+    # ======================================================
+
+    lag_map = {
+        "lag_15m": 1,
+        "lag_30m": 2,
+        "lag_1h": 4,
+        "lag_2h": 8,
+        "lag_4h": 16,
+        "lag_1d": 96,
+        "lag_2d": 96 * 2,
+        "lag_7d": 96 * 7,
+    }
+
+    for col_name, lag in lag_map.items():
+        df[col_name] = y.shift(lag)
+
+    # ======================================================
+    # RETURNS - NOMI ESATTI DELLA TUA VERSIONE
+    # ======================================================
+
+    df["pun_ret_1h"] = (
+        y
+        .pct_change(4)
+        .shift(1)
+    )
+
+    df["pun_ret_1d"] = (
+        y
+        .pct_change(96)
+        .shift(1)
+    )
+
+    df["pun_ret_7d"] = (
+        y
+        .pct_change(96 * 7)
+        .shift(1)
+    )
+
+    # ======================================================
+    # ROLLING FEATURES
+    # ======================================================
+
+    df["rolling_mean_4h"] = (
+        y
+        .shift(1)
+        .rolling(16)
+        .mean()
+    )
+
+    df["rolling_mean_24h"] = (
+        y
+        .shift(1)
+        .rolling(96)
+        .mean()
+    )
+
+    df["rolling_std_24h"] = (
+        y
+        .shift(1)
+        .rolling(96)
+        .std()
+    )
+
+    df["rolling_std_7d"] = (
+        y
+        .shift(1)
+        .rolling(96 * 7)
+        .std()
+    )
+
+    df["rolling_max_24h"] = (
+        y
+        .shift(1)
+        .rolling(96)
+        .max()
+    )
+
+    df["rolling_min_24h"] = (
+        y
+        .shift(1)
+        .rolling(96)
+        .min()
+    )
+
+    # ======================================================
+    # REGIME
+    # ======================================================
+
+    vol_24h = (
+        y
+        .shift(1)
+        .rolling(96)
+        .std()
+    )
+
+    threshold = vol_24h.quantile(0.8)
+
+    df["high_vol_regime"] = (
+        vol_24h > threshold
+    ).astype(int)
+
+    # ======================================================
+    # MOMENTUM
+    # ======================================================
+
+    df["momentum_4h"] = (
+        y.shift(1)
+        - y.shift(16)
+    )
+
+    df["momentum_1d"] = (
+        y.shift(1)
+        - y.shift(96)
+    )
+
+    return df
+    
 def build_forecast_feature_frame_same_features(
     df_hist,
     target_col,
@@ -17,10 +713,11 @@ def build_forecast_feature_frame_same_features(
     locations=None,
     terna=None,
     terna_zone="Italy",
-    lookback_days=LOOKBACK_DAYS,
+    lookback_days=10,
     use_commodities=True,
     terna_shift_steps=1
 ):
+
     """
     Costruisce frame storico + futuro usando le stesse feature
     della tua PUNFeatureEngineering.
@@ -374,7 +1071,7 @@ def resolve_mi_model_dropbox_path(
 
     return f"{dropbox_models_dir}/{file_name}"
 
-@st.cache_data(show_spinner=False)
+
 def load_mi_model_payload_from_dropbox(
     dropbox_token,
     model_path_from_json,
@@ -585,31 +1282,6 @@ def forecast_next_96_single_mi_model_from_dropbox(
 
     return forecast_df, exog_future, feature_frame
 
-
-# ==========================================================
-# FORECAST ALL MI MODELS
-# ==========================================================
-def normalize_hist_df(df_hist):
-
-    df = df_hist.copy()
-
-    if "Datetime" in df.columns:
-        df["Datetime"] = pd.to_datetime(df["Datetime"])
-        df = df.set_index("Datetime")
-
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep="last")]
-
-    try:
-        df = df.asfreq("15min")
-    except Exception:
-        pass
-
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.ffill()
-
-    return df
 
 def forecast_next_96_all_mi_models_dropbox(
     dfs,
