@@ -1551,11 +1551,6 @@ with st.expander("📚 Preview dataset"):
 # =========================================================
 run_pipeline = st.button("🚀 Run MI Pipeline (Forecast + Monitoring)")
 
-st.write("DFS KEYS:", list(dfs_mi.keys()))
-
-results_debug = load_mi_json_from_dropbox(DROPBOX_TOKEN)
-st.write("JSON KEYS:", list(results_debug.keys()))
-
 # =========================================================
 # PIPELINE COMPLETA
 # =========================================================
