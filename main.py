@@ -1499,7 +1499,7 @@ st.divider()
 st.header("⚡ MI Forecast + Monitoring")
 
 DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", "")
-LOOKBACK_DAYS = 10
+
 
 if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
