@@ -7,6 +7,237 @@ import pandas as pd
 import streamlit as st
 
 
+
+def build_forecast_feature_frame_same_features(
+    df_hist,
+    target_col,
+    future_index,
+    selected_exog,
+    meteo=None,
+    locations=None,
+    terna=None,
+    terna_zone="Italy",
+    lookback_days=LOOKBACK_DAYS,
+    use_commodities=True,
+    terna_shift_steps=1
+):
+    """
+    Costruisce frame storico + futuro usando le stesse feature
+    della tua PUNFeatureEngineering.
+
+    Output:
+    - exog_future = solo future_index e selected_exog
+    - feature_frame = debug completo storico+futuro
+    """
+
+    hist = normalize_hist_df(df_hist)
+
+    if target_col not in hist.columns:
+        raise ValueError(
+            f"Target '{target_col}' non presente nello storico."
+        )
+
+    hist_last_dt = hist.index.max()
+
+    full_start = max(
+        hist.index.min(),
+        hist_last_dt - pd.Timedelta(days=lookback_days)
+    )
+
+    full_end = future_index[-1]
+
+    full_index = pd.date_range(
+        start=full_start,
+        end=full_end,
+        freq="15min"
+    )
+
+    # ======================================================
+    # BASE STORICO + FUTURO
+    # ======================================================
+
+    base = pd.DataFrame(index=full_index)
+    base["Datetime"] = base.index
+
+    hist_reindexed = (
+        hist
+        .reindex(full_index)
+        .ffill()
+    )
+
+    # porto tutte le colonne storiche disponibili
+    for col in hist_reindexed.columns:
+        base[col] = hist_reindexed[col]
+
+    # IMPORTANTISSIMO:
+    # target futuro non deve essere ffillato.
+    # Dopo ultimo dato storico deve restare NaN.
+    base.loc[
+        base.index > hist_last_dt,
+        target_col
+    ] = np.nan
+
+    # ======================================================
+    # TEMPORAL FEATURES
+    # ======================================================
+
+    base = add_temporal_features_like_training(base)
+
+    base = base.set_index("Datetime", drop=False)
+    base = base.loc[:, ~base.columns.duplicated()]
+
+    # ======================================================
+    # METEO
+    # ======================================================
+
+    if meteo is not None and locations is not None:
+
+        try:
+            start_meteo = full_start.strftime("%Y-%m-%d")
+            end_meteo = full_end.strftime("%Y-%m-%d")
+
+            meteo_df = prepare_meteo_range(
+                meteo=meteo,
+                locations=locations,
+                start_date=start_meteo,
+                end_date=end_meteo,
+                full_index=full_index
+            )
+
+            base = pd.concat(
+                [base, meteo_df],
+                axis=1
+            )
+
+            base = base.loc[:, ~base.columns.duplicated()]
+
+        except Exception as e:
+            print(f"⚠️ Meteo non integrato: {e}")
+
+    # ======================================================
+    # TERNA ACTUAL FINO A OGGI
+    # ======================================================
+
+    if terna is not None:
+
+        try:
+            start_terna = full_start.strftime("%d/%m/%Y")
+            end_terna = pd.Timestamp.today().strftime("%d/%m/%Y")
+
+            terna_hist = prepare_terna_actual_range(
+                terna=terna,
+                start_date_terna=start_terna,
+                end_date_terna=end_terna,
+                zone=terna_zone,
+                shift_steps=terna_shift_steps
+            )
+
+            terna_full = extend_terna_to_full_index(
+                terna_df=terna_hist,
+                full_index=full_index
+            )
+
+            base = pd.concat(
+                [base, terna_full],
+                axis=1
+            )
+
+            base = base.loc[:, ~base.columns.duplicated()]
+
+        except Exception as e:
+            print(f"⚠️ Terna non integrata: {e}")
+
+    # ======================================================
+    # COMMODITIES
+    # ======================================================
+
+    if use_commodities:
+
+        try:
+            commodities = prepare_commodity_features_range(
+                full_index=full_index,
+                start_date=full_start.strftime("%Y-%m-%d")
+            )
+
+            base = pd.concat(
+                [base, commodities],
+                axis=1
+            )
+
+            base = base.loc[:, ~base.columns.duplicated()]
+
+        except Exception as e:
+            print(f"⚠️ Commodities non integrate: {e}")
+
+    # ======================================================
+    # TARGET-BASED FEATURES
+    # ======================================================
+
+    base = add_target_features_like_training(
+        df=base,
+        target_col=target_col
+    )
+
+    base = base.loc[:, ~base.columns.duplicated()]
+    base = base.replace([np.inf, -np.inf], np.nan)
+
+    # ======================================================
+    # EXOG FUTURE
+    # ======================================================
+
+    exog_future = base.loc[
+        future_index,
+        :
+    ].copy()
+
+    # ======================================================
+    # GARANTISCO selected_exog
+    # ======================================================
+
+    for col in selected_exog:
+
+        if col in exog_future.columns:
+            continue
+
+        # fallback da storico originale
+        if col in hist.columns and hist[col].dropna().shape[0] > 0:
+            exog_future[col] = (
+                pd.to_numeric(hist[col], errors="coerce")
+                .dropna()
+                .iloc[-1]
+            )
+
+        # fallback da base completo
+        elif col in base.columns and base[col].dropna().shape[0] > 0:
+            exog_future[col] = (
+                pd.to_numeric(base[col], errors="coerce")
+                .dropna()
+                .iloc[-1]
+            )
+
+        else:
+            exog_future[col] = 0.0
+
+    exog_future = exog_future[selected_exog].copy()
+
+    # numeric cleanup
+    for c in exog_future.columns:
+        exog_future[c] = pd.to_numeric(
+            exog_future[c],
+            errors="coerce"
+        )
+
+    exog_future = (
+        exog_future
+        .replace([np.inf, -np.inf], np.nan)
+        .ffill()
+        .bfill()
+        .fillna(0.0)
+    )
+
+    return exog_future, base
+
+
 def dbx_download_bytes(dropbox_token, dropbox_path):
     dbx = get_dropbox_client(dropbox_token)
 
