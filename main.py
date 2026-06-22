@@ -9,8 +9,9 @@ import plotly.graph_objects as go
 import yaml
 import dropbox
 
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
+from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox, EntsoeDownloader)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
+
 
 from functions.forecast_mi import (forecast_next_96_all_mi_models_dropbox)
 
@@ -520,73 +521,35 @@ def debug_mi_dropbox(dropbox_token: str):
 # CORE PIPELINE
 # =========================================================
 def pipeline_run():
-    log_lines = []
 
-    def log(msg: str):
-        log_lines.append(msg)
-
-    today = date.today()
-
-    # storico  
-    df_historical = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"]).copy()
-
-    if not isinstance(df_historical.index, pd.DatetimeIndex):
-      df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
-      df_historical = df_historical.set_index("Datetime")
+ df_historical.set_index("Datetime")    log_lines = []
 
     df_historical = df_historical.sort_index().asfreq("15min").ffill()
 
     last_date = df_historical.index.max()
-    # =========================================================
-    # LOOKBACK per feature tipo lag_7d / pun_ret_7d / momentum_1d
-    # =========================================================
-    LOOKBACK_DAYS = 8  # 7 giorni + margine
+    today = pd.Timestamp.today()
+
+    # =========================
+    # LOOKBACK
+    # =========================
+    LOOKBACK_DAYS = 8
     lookback_start_dt = pd.Timestamp(last_date).floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
     end_date_dt = pd.Timestamp(today)
 
-    START_DATE_METEO = lookback_start_dt.strftime("%Y-%m-%d")
-    END_DATE_METEO = end_date_dt.strftime("%Y-%m-%d")
-
-    START_DATE_TERNA = lookback_start_dt.strftime("%d/%m/%Y")
-    END_DATE_TERNA = end_date_dt.strftime("%d/%m/%Y")
-
-    START_DATE_PUN = lookback_start_dt.strftime("%Y-%m-%d")
-
     log(f"Ultima data storico: {last_date}")
-    log(f"Lookback start: {lookback_start_dt}")
-    log(f"Download Meteo da {START_DATE_METEO} a {END_DATE_METEO}")
-    log(f"Download Terna da {START_DATE_TERNA} a {END_DATE_TERNA}")
-    log(f"Start PUN: {START_DATE_PUN}")
 
-    # =========================================================
-    # PIPELINE NUOVI DATI (CON LOOKBACK)
-    # =========================================================
-    pun_fe = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
-    meteo = MeteoDownloader()
-    #
-    log("Preparazione PUN...")
-    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
+    # =========================
+    # PUN
+    # =========================
+    pun_fe = PUNFeatureEngineering(start=lookback_start_dt.strftime("%Y-%m-%d"), pun_col="PUN")
 
-    # 2️⃣ nuovi dati PUN (da Excel → già feature engineering completo)
-    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)
+    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]]
+    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)[["Datetime", "PUN"]]
 
-    # 3️⃣ prendi solo colonne raw PUN
-    pun_df_new = pun_df_new[["Datetime", "PUN"]].copy()
+    pun_full = pd.concat([pun_hist, pun_df_new])
+    pun_full = pun_full.drop_duplicates("Datetime", keep="last").sort_values("Datetime")
 
-    # 4️⃣ concat tutto
-    pun_full = pd.concat([pun_hist, pun_df_new], ignore_index=True)
-
-    pun_full = (
-      pun_full
-      .drop_duplicates(subset=["Datetime"], keep="last")
-      .sort_values("Datetime")
-      )
-
-    # 5️⃣ ora calcoli i lag DIRETTAMENTE qui (molto più semplice)
-    pun_full = pun_full.sort_values("Datetime")
-
+    # lag + returns
     pun_full["lag_2d"] = pun_full["PUN"].shift(96*2)
     pun_full["lag_7d"] = pun_full["PUN"].shift(96*7)
 
@@ -594,99 +557,158 @@ def pipeline_run():
     pun_full["pun_ret_7d"] = pun_full["PUN"].pct_change(96*7).shift(1)
 
     pun_full["momentum_1d"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(96)
-    # minute
+    pun_full["momentum_4h"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(16)
+
+    pun_full["pun_ret_1h"] = pun_full["PUN"].pct_change(4).shift(1)
     pun_full["minute"] = pd.to_datetime(pun_full["Datetime"]).dt.minute
-    # pun_ret_1h (4 quarter)
-    pun_full["pun_ret_1h"] = (pun_full["PUN"].pct_change(4).shift(1))
-    # momentum_4h (16 quarter)
-    pun_full["momentum_4h"] = (pun_full["PUN"].shift(1) - pun_full["PUN"].shift(16))
-
-
-    # 6️⃣ tieni solo la parte nuova
-    pun_full["Datetime"] = pd.to_datetime(pun_full["Datetime"])
 
     pun_df = pun_full[pun_full["Datetime"] >= lookback_start_dt].copy()
-    #
 
-    log("Preparazione Meteo...")
-    meteo_df = prepare_meteo(meteo, START_DATE_METEO, END_DATE_METEO)
+    # =========================
+    # METEO
+    # =========================
+    log("Meteo...")
+    meteo = MeteoDownloader()
 
-    terna_client_id = st.secrets.get("TERNA_CLIENT_ID", os.getenv("TERNA_CLIENT_ID", ""))
-    terna_client_secret = st.secrets.get("TERNA_CLIENT_SECRET", os.getenv("TERNA_CLIENT_SECRET", ""))
+    meteo_df = prepare_meteo(
+        meteo,
+        lookback_start_dt.strftime("%Y-%m-%d"),
+        end_date_dt.strftime("%Y-%m-%d")
+    )
 
-    if not terna_client_id or not terna_client_secret:
-        raise ValueError(
-            "Credenziali Terna mancanti. Inserisci TERNA_CLIENT_ID e TERNA_CLIENT_SECRET in st.secrets oppure env vars."
-        )
+    # =========================
+    # TERNA
+    # =========================
+    log("Terna...")
 
     terna = TernaClient(
-        client_id=terna_client_id,
-        client_secret=terna_client_secret,
+        client_id=st.secrets["TERNA_CLIENT_ID"],
+        client_secret=st.secrets["TERNA_CLIENT_SECRET"]
     )
 
-    log("Preparazione Terna...")
-    terna_df = prepare_terna(terna, START_DATE_TERNA, END_DATE_TERNA)
-    terna_df = shift_terna_only(terna_df, shift_steps=1)
+    terna_df = prepare_terna(
+        terna,
+        lookback_start_dt.strftime("%d/%m/%Y"),
+        end_date_dt.strftime("%d/%m/%Y")
+    )
 
-    log("Merge dataset...")
-    df_new_raw = merge_all(pun_df, meteo_df, terna_df)
+    terna_df = shift_terna_only(terna_df)
 
-    log("Feature engineering...")
-    df_new = add_features(df_new_raw)
+    # =========================
+    # 🔥 ENTSOE
+    # =========================
+    log("ENTSOE...")
 
-    # pulizia colonne inutili
+    ZONES = [
+        ("NORD", "10Y1001A1001A73I"),
+        ("CNOR", "10Y1001A1001A70O"),
+        ("CSUD", "10Y1001A1001A71M"),
+        ("SUD",  "10Y1001A1001A788"),
+        ("SARD", "10Y1001A1001A74G"),
+        ("SICI", "10Y1001A1001A75E"),
+        ("CALA", "10Y1001C--00096J")
+    ]
+
+    entsoe = EntsoeDownloader(
+        token=st.secrets["ENTSOE_TOKEN"],
+        zones=ZONES,
+        start_date=lookback_start_dt.to_pydatetime(),
+        end_date=end_date_dt.to_pydatetime()
+    )
+
+    entsoe_df = entsoe.build_dataframe()
+
+    entsoe_df["Timestamp"] = pd.to_datetime(entsoe_df["Timestamp"])
+    entsoe_df["feature"] = entsoe_df["Zone"] + "_" + entsoe_df["ProductionType"]
+
+    entsoe_feat = (
+        entsoe_df
+        .pivot_table(index="Timestamp", columns="feature", values="MW", aggfunc="mean")
+        .asfreq("15min")
+        .ffill()
+        .reset_index()
+    )
+
+    ent_cols = [c for c in entsoe_feat.columns if c != "Timestamp"]
+
+    # =========================
+    # MERGE
+    # =========================
+    log("Merge...")
+
+    df_new = merge_all(pun_df, meteo_df, terna_df)
+
+    df_new = df_new.merge(
+        entsoe_feat,
+        left_on="Datetime",
+        right_on="Timestamp",
+        how="left"
+    ).drop(columns=["Timestamp"])
+
+    # ✅ ENTSOE CLEAN
+    df_new[ent_cols] = df_new[ent_cols].fillna(0.0).astype(float)
+
+    # ✅ AGGIUNTA DINAMICA FEATURE (CRITICO)
+    global FEATURES_NEW, SELECTED_EXOG
+    FEATURES_NEW = list(set(FEATURES_NEW + ent_cols))
+    SELECTED_EXOG = list(set(SELECTED_EXOG + ent_cols))
+
+    # =========================
+    # FEATURES
+    # =========================
+    df_new = add_features(df_new)
+
     df_new.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
-    df_new = df_new.reset_index(drop=True)
 
-    # =========================================================
-    # TIENI SOLO LE RIGHE DAVVERO NUOVE
-    # =========================================================
-    df_new["Datetime"] = pd.to_datetime(df_new["Datetime"])
-    df_new = df_new[df_new["Datetime"] > last_date].copy()
+    df_new["Datetime"] = pd.to_datetime(df_new["Datetime"]).dt.tz_localize(None)
 
-    missing = [c for c in FEATURES_NEW if c not in df_new.columns]
-    extra = [c for c in df_new.columns if c not in FEATURES_NEW]
+    df_new = df_new[df_new["Datetime"] > last_date]
 
-    if missing:
-        st.error(f"❌ Feature mancanti: {missing}")
-        raise ValueError("Schema mismatch -> stop pipeline")
+    # =========================
+    # FINAL DATASET
+    # =========================
+    df_old = df_historical[FEATURES_OLD].reset_index()
+    df_new = df_new[FEATURES_NEW]
 
-    if extra:
-        st.warning(f"⚠️ Feature extra ignorate: {extra}")
-
-    validate_required_columns(
-        df_historical.reset_index(),
-        ["Datetime"] + FEATURES_OLD,
-        "df_historical.reset_index()"
-    )
-    validate_required_columns(df_new, FEATURES_NEW, "df new pipeline")
-
-    # storico già pronto
-    df_old = df_historical[FEATURES_OLD].copy().reset_index()
-
-    # nuove righe già pronte
-    df_new = df_new[FEATURES_NEW].copy()
-
-    # concat finale
-    df_final = pd.concat([df_old, df_new], axis=0, ignore_index=True)
-    df_final = df_final.drop_duplicates(subset=["Datetime"], keep="last")
-    df_final = df_final.sort_values("Datetime").reset_index(drop=True)
+    df_final = pd.concat([df_old, df_new])
+    df_final = df_final.drop_duplicates("Datetime").sort_values("Datetime")
     df_final.set_index("Datetime", inplace=True)
 
-    log(f"Shape finale: {df_final.shape}")
-    log(f"Ultima data finale: {df_final.index.max()}")
+    # =========================
+    # CHECK
+    # =========================
+    assert df_final.index.is_monotonic_increasing
+    assert df_final.index.is_unique
 
+    # =========================
+    # SAVE
+    # =========================
     df_final.to_parquet(OUTPUT_PATH)
-    log(f"Salvato file: {OUTPUT_PATH}")
 
     upload_to_dropbox(
         OUTPUT_PATH,
         "/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     )
-    log("Salvato dataset su Dropbox ✅")
+
+    log("✅ Dataset aggiornato con ENTSOE")
 
     return df_final, log_lines
+
+    def log(msg):
+        log_lines.append(msg)
+
+    # =========================
+    # LOAD STORICO
+    # =========================
+    df_historical = load_from_dropbox(
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]
+    ).copy()
+
+    if not isinstance(df_historical.index, pd.DatetimeIndex):
+        df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
+
 
 # =========================================================
 # UI - STATUS
@@ -743,7 +765,7 @@ with right:
 WINDOW = 96 * 7   # 7 giorni
 
 
-drift_cols = SELECTED_EXOG
+drift_cols = [c for c in df_updated.columns if c != "PUN"]
 
 if run_update:
     try:
