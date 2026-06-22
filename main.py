@@ -522,8 +522,6 @@ def debug_mi_dropbox(dropbox_token: str):
 # =========================================================
 def pipeline_run():
 
- df_historical.set_index("Datetime")    log_lines = []
-
     df_historical = df_historical.sort_index().asfreq("15min").ffill()
 
     last_date = df_historical.index.max()
@@ -616,7 +614,12 @@ def pipeline_run():
         end_date=end_date_dt.to_pydatetime()
     )
 
-    entsoe_df = entsoe.build_dataframe()
+    
+    entsoe_feat = entsoe.build_features()
+
+    entsoe_feat["Datetime"] = pd.to_datetime(entsoe_feat["Timestamp"])
+    entsoe_feat = entsoe_feat.drop(columns=["Timestamp"])
+
 
     entsoe_df["Timestamp"] = pd.to_datetime(entsoe_df["Timestamp"])
     entsoe_df["feature"] = entsoe_df["Zone"] + "_" + entsoe_df["ProductionType"]
@@ -638,12 +641,12 @@ def pipeline_run():
 
     df_new = merge_all(pun_df, meteo_df, terna_df)
 
+
     df_new = df_new.merge(
         entsoe_feat,
-        left_on="Datetime",
-        right_on="Timestamp",
+        on="Datetime",
         how="left"
-    ).drop(columns=["Timestamp"])
+        )
 
     # ✅ ENTSOE CLEAN
     df_new[ent_cols] = df_new[ent_cols].fillna(0.0).astype(float)
