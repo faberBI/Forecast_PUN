@@ -41,7 +41,7 @@ SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
 # CONFIG UI
 # =========================================================
 st.title("⚡ PUN Dataset Manager")
-st.caption("Aggiornamento dataset intraday PUN / Meteo / Terna")
+st.caption("Aggiornamento dataset intraday PUN / Meteo / Terna/ Entsoe")
 import dropbox
 
 # =========================================================
