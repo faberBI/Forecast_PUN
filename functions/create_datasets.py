@@ -4,6 +4,14 @@ import holidays
 import yfinance as yf
 import dropbox
 import streamlit as st
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+import random
 
 class PUNFeatureEngineering:
 
@@ -1373,5 +1381,216 @@ def load_from_dropbox(dropbox_path, token):
 
     return df
 
+
+class EntsoeDownloader:
+
+    def __init__(
+        self,
+        token,
+        zones,
+        start_date,
+        end_date,
+        psr_type="B16",
+        max_workers=5
+    ):
+        self.token = token
+        self.zones = zones
+        self.start_date = start_date
+        self.end_date = end_date
+        self.psr_type = psr_type
+        self.max_workers = max_workers
+
+        self.url = "https://web-api.tp.entsoe.eu/api"
+
+        self.ns = {
+            "ns": "urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0"
+        }
+
+        self.thread_local = threading.local()
+
+    # ======================================================
+    # SESSION
+    # ======================================================
+    def _get_session(self):
+
+        if not hasattr(self.thread_local, "session"):
+
+            s = requests.Session()
+            s.headers.update({"User-Agent": "Mozilla/5.0"})
+
+            self.thread_local.session = s
+
+        return self.thread_local.session
+
+    # ======================================================
+    # SAFE GET WITH RETRY
+    # ======================================================
+    def _safe_get(self, session, params, max_retries=5):
+
+        for i in range(max_retries):
+
+            try:
+
+                r = session.get(self.url, params=params, timeout=60)
+
+                if r.status_code == 429:
+                    sleep_time = (2 ** i) + random.uniform(0, 1)
+                    print(f"[429] sleep {sleep_time:.1f}s")
+                    time.sleep(sleep_time)
+                    continue
+
+                r.raise_for_status()
+                return r.content
+
+            except Exception as e:
+
+                sleep_time = (2 ** i) + random.uniform(0, 1)
+                print(f"[RETRY] {e} -> sleep {sleep_time:.1f}s")
+                time.sleep(sleep_time)
+
+        return None
+
+    # ======================================================
+    # PARSE XML
+    # ======================================================
+    def _parse_xml(self, xml_content, zone_name, day):
+
+        if xml_content is None:
+            return []
+
+        root = ET.fromstring(xml_content)
+
+        rows = []
+
+        for ts in root.findall(".//ns:TimeSeries", self.ns):
+
+            psr = ts.find(".//ns:psrType", self.ns)
+            psr_code = psr.text if psr is not None else "UNK"
+
+            period = ts.find("ns:Period", self.ns)
+
+            if period is None:
+                continue
+
+            start = period.find("ns:timeInterval/ns:start", self.ns)
+
+            if start is None:
+                continue
+
+            start_dt = (
+                datetime.strptime(start.text, "%Y-%m-%dT%H:%MZ")
+                .replace(tzinfo=ZoneInfo("UTC"))
+                .astimezone(ZoneInfo("Europe/Rome"))
+            )
+
+            for p in period.findall("ns:Point", self.ns):
+
+                pos = int(p.find("ns:position", self.ns).text)
+                qty = float(p.find("ns:quantity", self.ns).text)
+
+                ts_final = start_dt + timedelta(minutes=15 * (pos - 1))
+
+                rows.append((
+                    day,
+                    ts_final,
+                    zone_name,
+                    psr_code,
+                    qty
+                ))
+
+        return rows
+
+    # ======================================================
+    # FETCH SINGLE ZONE
+    # ======================================================
+    def _fetch_zone(self, zone_name, zone_code):
+
+        session = self._get_session()
+        results = []
+
+        current = self.start_date
+
+        while current <= self.end_date:
+
+            params = {
+                "documentType": "A69",
+                "processType": "A01",
+                "in_Domain": zone_code,
+                "periodStart": current.strftime("%Y%m%d0000"),
+                "periodEnd": current.strftime("%Y%m%d2300"),
+                "securityToken": self.token,
+                "psrType": self.psr_type
+            }
+
+            xml = self._safe_get(session, params)
+
+            rows = self._parse_xml(xml, zone_name, current.date())
+            results.extend(rows)
+
+            time.sleep(0.4)  # throttling
+
+            current += timedelta(days=1)
+
+        return results
+
+    # ======================================================
+    # PARALLEL FETCH
+    # ======================================================
+    def fetch_all(self):
+
+        all_rows = []
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+
+            futures = [
+                executor.submit(self._fetch_zone, name, code)
+                for name, code in self.zones
+            ]
+
+            for f in as_completed(futures):
+                all_rows.extend(f.result())
+
+        return all_rows
+
+    # ======================================================
+    # BUILD DATAFRAME
+    # ======================================================
+    def build_dataframe(self):
+
+        rows = self.fetch_all()
+
+        df = pd.DataFrame(
+            rows,
+            columns=["Date", "Timestamp", "Zone", "ProductionType", "MW"]
+        )
+
+        df = df.sort_values("Timestamp").reset_index(drop=True)
+
+        return df
+
+    # ======================================================
+    # BUILD FEATURES (ML READY)
+    # ======================================================
+    def build_features(self):
+
+        df = self.build_dataframe()
+
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+
+        df["feature"] = df["Zone"] + "_" + df["ProductionType"]
+
+        df = (
+            df.pivot_table(
+                index="Timestamp",
+                columns="feature",
+                values="MW",
+                aggfunc="mean"
+            )
+            .asfreq("15min")
+            .ffill()
+            .reset_index()
+        )
+
+        return df
 
 
