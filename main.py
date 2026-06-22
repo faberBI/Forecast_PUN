@@ -768,13 +768,11 @@ with right:
 WINDOW = 96 * 7   # 7 giorni
 
 
-drift_cols = [c for c in df_updated.columns if c != "PUN"]
-
 if run_update:
     try:
         with st.spinner("🚀 Aggiornamento dataset in corso..."):
             df_updated, logs = pipeline_run()
-
+            drift_cols = [c for c in df_updated.columns if c != "PUN"]
             # ✅ DRIFT CHECK
             drift_df = ks_drift(
                 df_historical.tail(WINDOW),
