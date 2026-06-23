@@ -552,7 +552,6 @@ def pipeline_run():
     df_historical = df_historical.sort_index().asfreq("15min").ffill()
 
     last_date = df_historical.index.max()
-
     # =========================
     # LOOKBACK
     # =========================
@@ -654,12 +653,14 @@ def pipeline_run():
     df_new_raw = merge_all(pun_df, meteo_df, terna_df)
     df_new_raw["Datetime"] = pd.to_datetime(df_new_raw["Datetime"])
     df_new_raw = df_new_raw.set_index("Datetime")
-    st.write(df_new_raw)
-    st.write(entsoe_feat)
     
+    log(f"MAX pun_full: {pun_full['Datetime'].max()}")
+    log(f"MAX meteo: {meteo_df['Datetime'].max()}")
+    log(f"MAX terna: {terna_df['Datetime'].max()}")
+    log(f"MAX entsoe: {entsoe_feat.index.max()}")
+
     # ✅ join ENTSOE (CORRETTO)
     df_new_raw = df_new_raw.join(entsoe_feat, how="left")
-    st.write(df_new_raw)
     df_new_raw = df_new_raw.reset_index()
 
     # =========================
