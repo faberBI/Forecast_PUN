@@ -1578,12 +1578,6 @@ with st.expander("📚 Preview dataset"):
         mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
 
         df_view2 = dfs_mi[mkt].copy()
-        df_view2.index = (
-            df_view2.index
-            .tz_convert("Europe/Rome")
-            .tz_localize(None)
-        )
-
         st.dataframe(df_view2.tail(50))
 
     else:
