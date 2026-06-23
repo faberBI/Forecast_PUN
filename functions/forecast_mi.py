@@ -445,14 +445,12 @@ def forecast_next_96_single_mi_model_from_dropbox(
     target=None,
     meteo=None,
     locations=None,
+    terna=None,
     steps=96,
     freq="15min",
-    **kwargs
+    lookback_days=10,
+    terna_shift_steps=1
 ):
-    """
-    Forecast next 96 per singolo modello MI.
-    Usa logica semplice stile forecast_day_ahead_96_base.
-    """
 
     payload, model_dropbox_path = load_mi_model_payload_from_dropbox(
         dropbox_token=dropbox_token,
@@ -471,32 +469,9 @@ def forecast_next_96_single_mi_model_from_dropbox(
 
     df = normalize_hist_df(df_hist)
 
-    if target not in df.columns:
-        raise ValueError(
-            f"Target '{target}' non presente in df_hist. "
-            f"Colonne disponibili: {df.columns.tolist()[:50]}"
-        )
+    y = pd.to_numeric(df[target], errors="coerce").dropna()
 
-    y = pd.to_numeric(
-        df[target],
-        errors="coerce"
-    ).dropna()
-
-    if len(y) == 0:
-        raise ValueError(
-            f"Target '{target}' vuoto dopo conversione numerica."
-        )
-
-    window_size = forecaster.window_size
-
-    if len(y) < window_size:
-        raise ValueError(
-            f"Serie troppo corta per last_window. "
-            f"len(y)={len(y)}, window_size={window_size}"
-        )
-
-    last_window = y.iloc[-window_size:].copy()
-
+    last_window = y.iloc[-forecaster.window_size:].copy()
     last_dt = y.index[-1]
 
     future_index = pd.date_range(
@@ -505,6 +480,9 @@ def forecast_next_96_single_mi_model_from_dropbox(
         freq=freq
     )
 
+    # =========================
+    # BUILD EXOG FUTURE BASE
+    # =========================
     exog_future = build_mi_exog_future_pun_style(
         df_hist=df,
         target_col=target,
@@ -514,26 +492,74 @@ def forecast_next_96_single_mi_model_from_dropbox(
         locations=locations
     )
 
+    # =========================
+    # ✅ TERNA
+    # =========================
+    if terna is not None:
+        terna_df = prepare_terna(
+            terna,
+            (last_dt - pd.Timedelta(days=lookback_days)).strftime("%d/%m/%Y"),
+            future_index[-1].strftime("%d/%m/%Y")
+        )
+        terna_df = shift_terna_only(terna_df)
+
+        exog_future = exog_future.merge(
+            terna_df,
+            on="Datetime",
+            how="left"
+        )
+
+    # =========================
+    # ✅ ENTSOE (FIX CRITICO)
+    # =========================
+    ZONES = [
+        ("NORD", "10Y1001A1001A73I"),
+        ("CNOR", "10Y1001A1001A70O"),
+        ("CSUD", "10Y1001A1001A71M"),
+        ("SUD",  "10Y1001A1001A788"),
+        ("SARD", "10Y1001A1001A74G"),
+        ("SICI", "10Y1001A1001A75E"),
+        ("CALA", "10Y1001C--00096J")
+    ]
+
+    entsoe = EntsoeDownloader(
+        token=st.secrets["ENTSOE_TOKEN"],
+        zones=ZONES,
+        start_date=future_index[0].to_pydatetime(),
+        end_date=future_index[-1].to_pydatetime()
+    )
+
+    entsoe_feat = entsoe.build_features()
+
+    entsoe_feat["Datetime"] = pd.to_datetime(entsoe_feat["Timestamp"])
+    entsoe_feat = entsoe_feat.drop(columns=["Timestamp"])
+
+    # 👉 merge ENTSOE
+    exog_future = exog_future.merge(
+        entsoe_feat,
+        on="Datetime",
+        how="left"
+    )
+
+    exog_future = exog_future.ffill()
+
+    # =========================
+    # PREDICT
+    # =========================
     preds = forecaster.predict(
         steps=steps,
         last_window=last_window,
         exog=exog_future
     )
 
-    preds = pd.Series(
-        np.asarray(preds).reshape(-1),
-        index=future_index,
-        name="pred"
-    )
-
-    created_at = pd.Timestamp.now()
+    preds = pd.Series(preds, index=future_index)
 
     forecast_df = pd.DataFrame({
         "Datetime": future_index,
         "nome_df": nome_df,
         "target": target,
         "pred": preds.values,
-        "created_at": created_at,
+        "created_at": pd.Timestamp.now(),
         "model_dropbox_path": model_dropbox_path
     })
 
