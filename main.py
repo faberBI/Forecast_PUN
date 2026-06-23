@@ -1792,31 +1792,40 @@ with st.expander("📚 Preview dataset"):
 # =========================================================
 # BUTTONS
 # =========================================================
+
 col1, col2 = st.columns(2)
 
 with col1:
-    run_pipeline = st.button("🚀 Run MI Pipeline", use_container_width=True)
+    run_update = st.button("🧱 Update DB + KS Drift", use_container_width=True)
 
 with col2:
-    run_ks = st.button("📊 KS Drift MI", use_container_width=True)
+    run_forecast = st.button("📈 Forecast + Monitoring", use_container_width=True)
 
 WINDOW = 96 * 7
 
 
 # =========================================================
-# ✅ KS DRIFT (SEPARATO)
+# ✅ BOTTONE 1: UPDATE DB + KS DRIFT
 # =========================================================
-if run_ks:
+if run_update:
 
     if not dfs_mi:
         st.error("❌ Nessun dataset MI")
         st.stop()
 
     try:
-        st.subheader("📊 KS Drift")
+        st.subheader("🧱 Update dataset")
 
         dfs_old = dfs_mi.copy()
-        dfs_new, _ = pipeline_run_mi()
+
+        with st.spinner("Aggiornamento DB MI..."):
+            dfs_new, logs = pipeline_run_mi()
+
+        st.success("✅ DB aggiornato")
+        st.code("\n".join(logs))
+
+        # ===== KS DRIFT =====
+        st.subheader("📊 KS Drift")
 
         drift_results = []
 
@@ -1846,13 +1855,14 @@ if run_ks:
             drift_results.append(drift_df)
 
         if drift_results:
+
             drift_all = pd.concat(drift_results)
             st.dataframe(drift_all)
 
             n_drift = drift_all["drift_flag"].sum()
 
             if n_drift >= 10:
-                st.error("🚨 Drift forte")
+                st.error("🚨 Drift forte → retrain!")
             elif n_drift > 0:
                 st.warning("⚠️ Drift moderato")
             else:
@@ -1861,158 +1871,151 @@ if run_ks:
         else:
             st.warning("⚠️ Drift non calcolabile")
 
+        # aggiorna runtime
+        dfs_mi = dfs_new
+
     except Exception:
-        st.error("❌ Errore KS")
+        st.error("❌ Errore update + KS")
         st.code(traceback.format_exc())
 
 
 # =========================================================
-# ✅ PIPELINE
+# ✅ BOTTONE 2: FORECAST + MONITORING (per ciascun mercato MI)
 # =========================================================
-if run_pipeline:
+if run_forecast:
 
     if not dfs_mi:
         st.error("❌ Nessun dataset MI")
         st.stop()
 
     try:
-        st.subheader("🧱 Update Dataset")
+        st.subheader("📈 Forecast")
 
-        with st.spinner("Aggiornamento dataset..."):
-            dfs_mi, logs = pipeline_run_mi()
+        terna = TernaClient(
+            client_id=st.secrets["TERNA_CLIENT_ID"],
+            client_secret=st.secrets["TERNA_CLIENT_SECRET"]
+        )
 
-        st.success("✅ Dataset aggiornati")
-        st.code("\n".join(logs))
+        meteo = MeteoDownloader()
+
+        df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
+            dfs=dfs_mi,
+            dropbox_token=DROPBOX_TOKEN,
+            dropbox_results_json_path=MI_RESULTS_JSON_PATH,
+            dropbox_models_dir=MI_MODELS_DIR,
+            dropbox_forecasts_dir=MI_FORECASTS_DIR,
+            forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
+            forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
+            errors_path=MI_FORECAST_ERRORS_PATH,
+            meteo=meteo,
+            locations=LOCATIONS,
+            terna=terna,
+            steps=MI_STEPS,
+            freq=MI_FREQ,
+            lookback_days=MI_LOOKBACK_DAYS
+        )
+
+        if df_errors is not None and not df_errors.empty:
+            st.error("❌ Errori modelli")
+            st.dataframe(df_errors)
+
+        if df_long is None or df_long.empty:
+            st.error("❌ Forecast vuoto")
+            st.stop()
+
+        st.success("✅ Forecast completato")
+        st.dataframe(df_long.tail(100))
+
+        # =================================================
+        # MONITORING
+        # =================================================
+        st.subheader("📉 Monitoring")
+
+        uploaded_file = st.file_uploader("Carica Excel MI reali", type=["xlsx"])
+
+        if uploaded_file is None:
+            st.info("⬆️ Carica il file Excel con i prezzi reali per calcolare l'errore")
+            st.stop()
+
+        df_real = pd.read_excel(uploaded_file)
+
+        df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
+        df_real["Datetime"] = (
+            df_real["Data"]
+            + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
+        )
+
+        df_forecast = load_from_dropbox(
+            MI_FORECAST_HISTORY_LONG,
+            DROPBOX_TOKEN
+        ).copy()
+
+        df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
+
+        if df_forecast["Datetime"].dt.tz is not None:
+            df_forecast["Datetime"] = (
+                df_forecast["Datetime"]
+                .dt.tz_convert("Europe/Rome")
+                .dt.tz_localize(None)
+            )
+
+        # ===== Matching forecast vs real, per ciascun mercato =====
+        all_eval = []
+
+        for col in df_real.columns:
+
+            if col in ["Data", "Ora", "Periodo", "Datetime", "Italia"]:
+                continue
+
+            nome_df = make_market_key(col)
+
+            df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
+
+            if df_pred.empty:
+                continue
+
+            df_tmp = df_pred.merge(
+                df_real[["Datetime", col]],
+                on="Datetime",
+                how="inner"
+            )
+
+            if df_tmp.empty:
+                continue
+
+            df_tmp = df_tmp.rename(columns={col: "real"})
+
+            df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
+            df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
+
+            all_eval.append(df_tmp)
+
+        if not all_eval:
+            st.warning("⚠️ Nessun match forecast vs real")
+            st.stop()
+
+        df_eval = pd.concat(all_eval)
+
+        df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
+        df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
+
+        c1, c2 = st.columns(2)
+        c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
+
+        st.line_chart(df_eval[["mae", "rmse"]].dropna())
+
+        mape = df_eval["error_abs_perc"].mean() * 100
+
+        if mape > 25:
+            st.error("🚨 Drift forte")
+        elif mape > 18:
+            st.warning("⚠️ Drift moderato")
+        else:
+            st.success("✅ Modello stabile")
+
+        st.success("✅ Pipeline completata")
 
     except Exception:
-        st.error("❌ Errore update")
+        st.error("❌ Errore forecast/monitoring")
         st.code(traceback.format_exc())
-        st.stop()
-
-
-    # =========================================================
-    # ✅ FORECAST
-    # =========================================================
-    st.subheader("📈 Forecast")
-
-    terna = TernaClient(
-        client_id=st.secrets["TERNA_CLIENT_ID"],
-        client_secret=st.secrets["TERNA_CLIENT_SECRET"]
-    )
-
-    meteo = MeteoDownloader()
-
-    df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
-        dfs=dfs_mi,
-        dropbox_token=DROPBOX_TOKEN,
-        dropbox_results_json_path=MI_RESULTS_JSON_PATH,
-        dropbox_models_dir=MI_MODELS_DIR,
-        dropbox_forecasts_dir=MI_FORECASTS_DIR,
-        forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
-        forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
-        errors_path=MI_FORECAST_ERRORS_PATH,
-        meteo=meteo,
-        locations=LOCATIONS,
-        terna=terna,
-        steps=MI_STEPS,
-        freq=MI_FREQ,
-        lookback_days=MI_LOOKBACK_DAYS
-    )
-
-    if df_errors is not None and not df_errors.empty:
-        st.error("❌ Errori modelli")
-        st.dataframe(df_errors)
-
-    if df_long is None or df_long.empty:
-        st.error("❌ Forecast vuoto")
-        st.stop()
-
-    st.success("✅ Forecast completato")
-    st.dataframe(df_long.tail(100))
-
-
-    # =========================================================
-    # ✅ MONITORING
-    # =========================================================
-    st.subheader("📉 Monitoring")
-
-    uploaded_file = st.file_uploader("Carica Excel MI reali", type=["xlsx"])
-
-    if uploaded_file is None:
-        st.stop()
-
-    df_real = pd.read_excel(uploaded_file)
-
-    df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
-
-    df_real["Datetime"] = (
-        df_real["Data"]
-        + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
-    )
-
-
-    df_forecast = load_from_dropbox(
-        MI_FORECAST_HISTORY_LONG,
-        DROPBOX_TOKEN
-    ).copy()
-
-    df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
-
-    if df_forecast["Datetime"].dt.tz is not None:
-        df_forecast["Datetime"] = (
-            df_forecast["Datetime"]
-            .dt.tz_convert("Europe/Rome")
-            .dt.tz_localize(None)
-        )
-
-    all_eval = []
-
-    for col in df_real.columns:
-
-        if col in ["Data", "Ora", "Periodo", "Datetime"]:
-            continue
-
-        nome_df = make_market_key(col)
-
-        df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
-
-        df_tmp = df_pred.merge(
-            df_real[["Datetime", col]],
-            on="Datetime"
-        )
-
-        if df_tmp.empty:
-            continue
-
-        df_tmp = df_tmp.rename(columns={col: "real"})
-
-        df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
-        df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
-
-        all_eval.append(df_tmp)
-
-    if not all_eval:
-        st.warning("⚠️ Nessun match forecast vs real")
-        st.stop()
-
-    df_eval = pd.concat(all_eval)
-
-    df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
-    df_eval["rmse"] = (df_eval["abs_error"]**2).rolling(96).mean()**0.5
-
-    c1, c2 = st.columns(2)
-    c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
-    c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
-
-    st.line_chart(df_eval[["mae", "rmse"]].dropna())
-
-    mape = df_eval["error_abs_perc"].mean() * 100
-
-    if mape > 25:
-        st.error("🚨 Drift forte")
-    elif mape > 18:
-        st.warning("⚠️ Drift moderato")
-    else:
-        st.success("✅ Modello stabile")
-
-    st.success("✅ Pipeline completata")
