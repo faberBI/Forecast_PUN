@@ -1159,10 +1159,6 @@ if uploaded_file is not None:
           st.stop()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
-        # ✅ FIX TIMEZONE PER MERGE# ✅ FIX TIMEZONE PERdf_forecast["Datetime"] = (
-        
-        df_forecast["Datetime"] = (df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
-
         st.info(f"Forecast caricati: {len(df_forecast)} righe")
         # limite sui reali disponibili
         max_real_dt = df_real.index.max()
