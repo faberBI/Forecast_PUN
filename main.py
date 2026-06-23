@@ -876,12 +876,9 @@ import joblib
 import traceback
 import dropbox
 
-# FONDAMENTALE:
-# pipeline.py deve essere presente nella root della webapp Streamlit.
-# Serve perché model_prod.pkl contiene riferimenti a funzioni definite in pipeline.py,
-# ad esempio production_weight_func.
+
 try:
-    import pipeline  # noqa: F401
+    import pipeline  
 except Exception as e:
     st.error(
         "❌ Impossibile importare pipeline.py. "
@@ -1523,9 +1520,231 @@ def debug_mi_dropbox(dropbox_token: str):
 
     return report
 
-# =========================================================
-# ⚡ MI PIPELINE: UPDATE + FORECAST + MONITORING
-# =========================================================
+def pipeline_run_mi():
+
+    log_lines = []
+
+    def log(msg):
+        log_lines.append(msg)
+
+    DROPBOX_TOKEN = st.secrets["DROPBOX_TOKEN"]
+
+    # =========================
+    # LOAD MI HISTORICAL
+    # =========================
+    dfs_mi = load_mi_datasets_from_dropbox_cached(DROPBOX_TOKEN)
+
+    if not dfs_mi:
+        raise ValueError("❌ Nessun dataset MI")
+
+    # =========================
+    # LOAD EXCEL UNICO
+    # =========================
+    df_excel = pd.read_excel("dati_input/MI.xlsx")
+
+    df_excel["Data"] = pd.to_datetime(df_excel["Data"], dayfirst=True)
+    df_excel["Datetime"] = (
+        df_excel["Data"]
+        + pd.to_timedelta((df_excel["Periodo"] - 1) * 15, unit="m")
+    )
+    df_excel = df_excel.sort_values("Datetime")
+
+    today = pd.Timestamp.today()
+
+    updated_dfs = {}
+
+    # =========================
+    # LOOP MERCATI
+    # =========================
+    for nome, df_historical in dfs_mi.items():
+
+        log(f"--- {nome} ---")
+
+        df_historical = df_historical.copy()
+        df_historical.index = pd.to_datetime(df_historical.index)
+
+        # ✅ timezone safe
+        if df_historical.index.tz is not None:
+            df_historical.index = (
+                df_historical.index
+                .tz_convert("Europe/Rome")
+                .tz_localize(None)
+            )
+
+        df_historical = df_historical.sort_index().asfreq("15min").ffill()
+
+        last_date = df_historical.index.max()
+
+        # =========================
+        # LOOKBACK
+        # =========================
+        LOOKBACK_DAYS = 8
+        lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
+
+        # =========================
+        # MATCH COLONNA EXCEL
+        # =========================
+        col_name = None
+
+        for c in df_excel.columns:
+            if nome.replace("_", " ").lower() in str(c).lower():
+                col_name = c
+                break
+
+        if col_name is None:
+            log(f"⚠️ colonna non trovata per {nome}")
+            continue
+
+        # =========================
+        # TARGET (Y)
+        # =========================
+        df_new_y = df_excel[["Datetime", col_name]].copy()
+
+        df_new_y = df_new_y.rename(columns={col_name: "target"})
+
+        df_new_y["target"] = (
+            df_new_y["target"]
+            .astype(str)
+            .str.replace(",", ".")
+            .astype(float)
+        )
+
+        # =========================
+        # CONCAT STORICO + NUOVI
+        # =========================
+        df_hist = df_historical.reset_index()[["Datetime", "target"]]
+
+        df_full = pd.concat([df_hist, df_new_y])
+        df_full = df_full.drop_duplicates("Datetime", keep="last")
+        df_full = df_full.sort_values("Datetime")
+
+        # =========================
+        # FEATURE ENGINEERING
+        # =========================
+        df_full["lag_2d"] = df_full["target"].shift(96 * 2)
+        df_full["lag_7d"] = df_full["target"].shift(96 * 7)
+
+        df_full["ret_1d"] = df_full["target"].pct_change(96).shift(1)
+        df_full["ret_7d"] = df_full["target"].pct_change(96 * 7).shift(1)
+
+        df_full["momentum_1d"] = df_full["target"].shift(1) - df_full["target"].shift(96)
+        df_full["momentum_4h"] = df_full["target"].shift(1) - df_full["target"].shift(16)
+
+        df_full["ret_1h"] = df_full["target"].pct_change(4).shift(1)
+        df_full["minute"] = pd.to_datetime(df_full["Datetime"]).dt.minute
+
+        # =========================
+        # BASE LOOKBACK
+        # =========================
+        df_base = df_full[df_full["Datetime"] >= lookback_start_dt]
+
+        # =========================
+        # METEO
+        # =========================
+        meteo_df = prepare_meteo(
+            MeteoDownloader(),
+            lookback_start_dt.strftime("%Y-%m-%d"),
+            today.strftime("%Y-%m-%d")
+        )
+
+        # =========================
+        # TERNA
+        # =========================
+        terna_df = prepare_terna(
+            TernaClient(
+                st.secrets["TERNA_CLIENT_ID"],
+                st.secrets["TERNA_CLIENT_SECRET"]
+            ),
+            lookback_start_dt.strftime("%d/%m/%Y"),
+            today.strftime("%d/%m/%Y")
+        )
+
+        terna_df = shift_terna_only(terna_df)
+
+        # =========================
+        # ENTSOE ✅ CORRETTO
+        # =========================
+        ZONES = [
+            ("NORD", "10Y1001A1001A73I"),
+            ("CNOR", "10Y1001A1001A70O"),
+            ("CSUD", "10Y1001A1001A71M"),
+            ("SUD",  "10Y1001A1001A788"),
+            ("SARD", "10Y1001A1001A74G"),
+            ("SICI", "10Y1001A1001A75E"),
+            ("CALA", "10Y1001C--00096J")
+        ]
+
+        entsoe = EntsoeDownloader(
+            token=st.secrets["ENTSOE_TOKEN"],
+            zones=ZONES,
+            start_date=lookback_start_dt.to_pydatetime(),
+            end_date=today.to_pydatetime()
+        )
+
+        entsoe_feat = entsoe.build_features()
+
+        # ✅ timezone safe
+        if entsoe_feat.index.tz is not None:
+            entsoe_feat.index = (
+                entsoe_feat.index
+                .tz_convert("Europe/Rome")
+                .tz_localize(None)
+            )
+
+        # =========================
+        # MERGE ✅ INDEX BASED
+        # =========================
+        df_new = df_base.merge(meteo_df, on="Datetime", how="left")
+        df_new = df_new.merge(terna_df, on="Datetime", how="left")
+
+        df_new["Datetime"] = pd.to_datetime(df_new["Datetime"])
+        df_new = df_new.set_index("Datetime")
+
+        # 🔥 join ENTSOE
+        df_new = df_new.join(entsoe_feat, how="left")
+
+        # =========================
+        # FEATURES FINALI
+        # =========================
+        df_new = df_new.reset_index()
+        df_new = add_features(df_new)
+
+        # =========================
+        # SOLO NUOVE
+        # =========================
+        df_new = df_new[df_new["Datetime"] > last_date]
+
+        # =========================
+        # FINAL
+        # =========================
+        df_final = pd.concat([
+            df_historical.reset_index(),
+            df_new
+        ])
+
+        df_final = df_final.drop_duplicates("Datetime").sort_values("Datetime")
+        df_final = df_final.set_index("Datetime")
+
+        # =========================
+        # SAVE
+        # =========================
+        filename = f"MI_{nome}.parquet"
+        local_path = f"/tmp/{filename}"
+
+        df_final.to_parquet(local_path)
+
+        upload_to_dropbox(
+            local_path,
+            f"{MI_DATASETS_DIR}/{filename}",
+            DROPBOX_TOKEN
+        )
+
+        log(f"✅ {nome} aggiornato: {df_final.shape}")
+        updated_dfs[nome] = df_final
+
+    return updated_dfs, log_lines
+
+# ============================⚡ MI PIPELINE: UPDATE + FORECAST + MONITORING ⚡=========================== #
 
 st.divider()
 st.header("⚡ MI Forecast + Monitoring")
@@ -1536,21 +1755,13 @@ if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
     st.stop()
 
-
-# =========================================================
-# DEBUG
-# =========================================================
-if st.sidebar.button("🧪 Debug MI Dropbox"):
-    debug_mi_dropbox(DROPBOX_TOKEN)
-
-
 # =========================================================
 # LOAD DATASETS
 # =========================================================
-col1, col2, col3 = st.columns(3)
-
 try:
     dfs_mi = load_mi_datasets_from_dropbox_cached(DROPBOX_TOKEN)
+
+    col1, col2, col3 = st.columns(3)
 
     col1.metric("Dataset MI", len(dfs_mi))
 
@@ -1570,77 +1781,63 @@ except Exception:
 # =========================================================
 # PREVIEW
 # =========================================================
-
 with st.expander("📚 Preview dataset"):
     if dfs_mi:
         mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
-
-        df_view2 = dfs_mi[mkt].copy()
-        st.dataframe(df_view2.tail(50))
-
+        st.dataframe(dfs_mi[mkt].tail(50), use_container_width=True)
     else:
         st.warning("Niente dataset")
 
 
 # =========================================================
-# CONTROL
+# BUTTONS
 # =========================================================
-run_pipeline = st.button("🚀 Run MI Pipeline (Update + Forecast + Monitoring)")
+col1, col2 = st.columns(2)
 
-WINDOW = 96 * 7   # 7 giorni
+with col1:
+    run_pipeline = st.button("🚀 Run MI Pipeline", use_container_width=True)
+
+with col2:
+    run_ks = st.button("📊 KS Drift MI", use_container_width=True)
+
+WINDOW = 96 * 7
 
 
 # =========================================================
-# PIPELINE RUN
+# ✅ KS DRIFT (SEPARATO)
 # =========================================================
-if run_pipeline:
+if run_ks:
 
     if not dfs_mi:
         st.error("❌ Nessun dataset MI")
         st.stop()
 
     try:
+        st.subheader("📊 KS Drift")
 
-        # =================================================
-        # 1️⃣ UPDATE DATASET
-        # =================================================
-        st.subheader("🧱 Step 1: Update dataset")
-
-        with st.spinner("Aggiornamento dataset MI..."):
-            dfs_updated, logs = pipeline_run_mi()
-
-        st.success("✅ Dataset MI aggiornati")
-        st.code("\n".join(logs), language="text")
-
-        # tieni old per KS
         dfs_old = dfs_mi.copy()
-        dfs_mi = dfs_updated
-
-
-        # =================================================
-        # ✅ KS DRIFT (TUTTI I MERCATI)
-        # =================================================
-        st.subheader("📊 Covariate Drift (KS Test)")
+        dfs_new, _ = pipeline_run_mi()
 
         drift_results = []
 
-        for nome in dfs_mi:
+        for nome in dfs_new:
 
             if nome not in dfs_old:
                 continue
 
             df_old = dfs_old[nome]
-            df_new = dfs_mi[nome]
+            df_new = dfs_new[nome]
 
             if len(df_old) < WINDOW or len(df_new) < WINDOW:
                 continue
 
-            df_old_win = df_old.tail(WINDOW)
-            df_new_win = df_new.tail(WINDOW)
-
             cols = [c for c in df_new.columns if c != "target"]
 
-            drift_df = ks_drift(df_old_win, df_new_win, cols)
+            drift_df = ks_drift(
+                df_old.tail(WINDOW),
+                df_new.tail(WINDOW),
+                cols
+            )
 
             if drift_df.empty:
                 continue
@@ -1649,15 +1846,13 @@ if run_pipeline:
             drift_results.append(drift_df)
 
         if drift_results:
-
             drift_all = pd.concat(drift_results)
-
             st.dataframe(drift_all)
 
             n_drift = drift_all["drift_flag"].sum()
 
             if n_drift >= 10:
-                st.error("🚨 Drift forte (MI)")
+                st.error("🚨 Drift forte")
             elif n_drift > 0:
                 st.warning("⚠️ Drift moderato")
             else:
@@ -1666,150 +1861,158 @@ if run_pipeline:
         else:
             st.warning("⚠️ Drift non calcolabile")
 
-
-        # =================================================
-        # 2️⃣ FORECAST
-        # =================================================
-        st.subheader("📈 Step 2: Forecast")
-
-        terna = TernaClient(
-            client_id=st.secrets["TERNA_CLIENT_ID"],
-            client_secret=st.secrets["TERNA_CLIENT_SECRET"]
-        )
-
-        meteo = MeteoDownloader()
-
-        with st.spinner("Running forecast MI..."):
-
-            df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
-                dfs=dfs_mi,
-                dropbox_token=DROPBOX_TOKEN,
-                dropbox_results_json_path=MI_RESULTS_JSON_PATH,
-                dropbox_models_dir=MI_MODELS_DIR,
-                dropbox_forecasts_dir=MI_FORECASTS_DIR,
-                forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
-                forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
-                errors_path=MI_FORECAST_ERRORS_PATH,
-                meteo=meteo,
-                locations=LOCATIONS,
-                terna=terna,
-                steps=MI_STEPS,
-                freq=MI_FREQ,
-                lookback_days=MI_LOOKBACK_DAYS
-            )
-
-        if df_errors is not None and not df_errors.empty:
-            st.error("❌ ERRORI MODELLI")
-            st.dataframe(df_errors)
-
-        if df_long is None or df_long.empty:
-            st.error("❌ Forecast vuoto")
-            st.stop()
-
-        st.success("✅ Forecast completato")
-        st.dataframe(df_long.tail(100))
-
-
-        # =================================================
-        # 3️⃣ UPLOAD REALI
-        # =================================================
-        st.subheader("📥 Step 3: Upload reali")
-
-        uploaded_file = st.file_uploader(
-            "Carica Excel MI reali",
-            type=["xlsx"]
-        )
-
-        if uploaded_file is None:
-            st.info("⬆️ Carica file reale MI")
-            st.stop()
-
-        df_real = pd.read_excel(uploaded_file)
-
-        df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
-
-        df_real["Datetime"] = (
-            df_real["Data"]
-            + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
-        )
-
-        df_real = df_real.sort_values("Datetime")
-
-
-        # =================================================
-        # 4️⃣ MONITORING
-        # =================================================
-        st.subheader("📉 Step 4: Monitoring")
-
-        df_forecast = load_from_dropbox(
-            MI_FORECAST_HISTORY_LONG,
-            DROPBOX_TOKEN
-        ).copy()
-
-        df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
-        df_forecast["Datetime"] = (df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
-        all_eval = []
-
-        for col in df_real.columns:
-
-            if col in ["Data", "Ora", "Periodo", "Datetime"]:
-                continue
-
-            nome_df = make_market_key(col)
-
-            df_pred = df_forecast[
-                df_forecast["nome_df"] == nome_df
-            ]
-
-            if df_pred.empty:
-                continue
-
-            df_tmp = df_pred.merge(
-                df_real[["Datetime", col]],
-                on="Datetime"
-            )
-
-            if df_tmp.empty:
-                continue
-
-            df_tmp = df_tmp.rename(columns={col: "real"})
-
-            df_tmp["error"] = df_tmp["real"] - df_tmp["pred"]
-            df_tmp["abs_error"] = df_tmp["error"].abs()
-            df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
-
-            all_eval.append(df_tmp)
-
-        if not all_eval:
-            st.warning("⚠️ Nessun match forecast vs real")
-            st.stop()
-
-        df_eval = pd.concat(all_eval)
-
-        df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
-        df_eval["rmse"] = (df_eval["error"]**2).rolling(96).mean()**0.5
-
-        st.subheader("📊 Metriche")
-
-        c1, c2 = st.columns(2)
-        c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
-        c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
-
-        st.line_chart(df_eval[["mae", "rmse"]].dropna())
-
-        mape = df_eval["error_abs_perc"].mean() * 100
-
-        if mape > 25:
-            st.error("🚨 Drift forte")
-        elif mape > 18:
-            st.warning("⚠️ Drift moderato")
-        else:
-            st.success("✅ Modello stabile")
-
-        st.success("✅ Pipeline completata")
-
-        st.cache_data.clear()
-
-    except Exception as e:
-        st.error("❌ ERRORE PIPELINE MI")
+    except Exception:
+        st.error("❌ Errore KS")
         st.code(traceback.format_exc())
+
+
+# =========================================================
+# ✅ PIPELINE
+# =========================================================
+if run_pipeline:
+
+    if not dfs_mi:
+        st.error("❌ Nessun dataset MI")
+        st.stop()
+
+    try:
+        st.subheader("🧱 Update Dataset")
+
+        with st.spinner("Aggiornamento dataset..."):
+            dfs_mi, logs = pipeline_run_mi()
+
+        st.success("✅ Dataset aggiornati")
+        st.code("\n".join(logs))
+
+    except Exception:
+        st.error("❌ Errore update")
+        st.code(traceback.format_exc())
+        st.stop()
+
+
+    # =========================================================
+    # ✅ FORECAST
+    # =========================================================
+    st.subheader("📈 Forecast")
+
+    terna = TernaClient(
+        client_id=st.secrets["TERNA_CLIENT_ID"],
+        client_secret=st.secrets["TERNA_CLIENT_SECRET"]
+    )
+
+    meteo = MeteoDownloader()
+
+    df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
+        dfs=dfs_mi,
+        dropbox_token=DROPBOX_TOKEN,
+        dropbox_results_json_path=MI_RESULTS_JSON_PATH,
+        dropbox_models_dir=MI_MODELS_DIR,
+        dropbox_forecasts_dir=MI_FORECASTS_DIR,
+        forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
+        forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
+        errors_path=MI_FORECAST_ERRORS_PATH,
+        meteo=meteo,
+        locations=LOCATIONS,
+        terna=terna,
+        steps=MI_STEPS,
+        freq=MI_FREQ,
+        lookback_days=MI_LOOKBACK_DAYS
+    )
+
+    if df_errors is not None and not df_errors.empty:
+        st.error("❌ Errori modelli")
+        st.dataframe(df_errors)
+
+    if df_long is None or df_long.empty:
+        st.error("❌ Forecast vuoto")
+        st.stop()
+
+    st.success("✅ Forecast completato")
+    st.dataframe(df_long.tail(100))
+
+
+    # =========================================================
+    # ✅ MONITORING
+    # =========================================================
+    st.subheader("📉 Monitoring")
+
+    uploaded_file = st.file_uploader("Carica Excel MI reali", type=["xlsx"])
+
+    if uploaded_file is None:
+        st.stop()
+
+    df_real = pd.read_excel(uploaded_file)
+
+    df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
+
+    df_real["Datetime"] = (
+        df_real["Data"]
+        + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
+    )
+
+
+    df_forecast = load_from_dropbox(
+        MI_FORECAST_HISTORY_LONG,
+        DROPBOX_TOKEN
+    ).copy()
+
+    df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
+
+    if df_forecast["Datetime"].dt.tz is not None:
+        df_forecast["Datetime"] = (
+            df_forecast["Datetime"]
+            .dt.tz_convert("Europe/Rome")
+            .dt.tz_localize(None)
+        )
+
+    all_eval = []
+
+    for col in df_real.columns:
+
+        if col in ["Data", "Ora", "Periodo", "Datetime"]:
+            continue
+
+        nome_df = make_market_key(col)
+
+        df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
+
+        df_tmp = df_pred.merge(
+            df_real[["Datetime", col]],
+            on="Datetime"
+        )
+
+        if df_tmp.empty:
+            continue
+
+        df_tmp = df_tmp.rename(columns={col: "real"})
+
+        df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
+        df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
+
+        all_eval.append(df_tmp)
+
+    if not all_eval:
+        st.warning("⚠️ Nessun match forecast vs real")
+        st.stop()
+
+    df_eval = pd.concat(all_eval)
+
+    df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
+    df_eval["rmse"] = (df_eval["abs_error"]**2).rolling(96).mean()**0.5
+
+    c1, c2 = st.columns(2)
+    c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
+    c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
+
+    st.line_chart(df_eval[["mae", "rmse"]].dropna())
+
+    mape = df_eval["error_abs_perc"].mean() * 100
+
+    if mape > 25:
+        st.error("🚨 Drift forte")
+    elif mape > 18:
+        st.warning("⚠️ Drift moderato")
+    else:
+        st.success("✅ Modello stabile")
+
+    st.success("✅ Pipeline completata")
