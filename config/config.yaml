@@ -35,6 +35,13 @@ features:
     - load_ramp_1h
     - load_forecast_error
     - PUN
+    - CALA_B16
+    - CNOR_B16
+    - CSUD_B16
+    - NORD_B16
+    - SARD_B16
+    - SICI_B16
+    - SUD_B16
 
   SELECTED_EXOG:
     - minute
@@ -50,5 +57,12 @@ features:
     - cloud_cover_mean
     - forecast_total_load_MW
     - actual_generation_GWh_hydro
+    - CALA_B16
+    - CNOR_B16
+    - CSUD_B16
+    - NORD_B16
+    - SARD_B16
+    - SICI_B16
+    - SUD_B16
     - load_ramp_1h
     - load_forecast_error
