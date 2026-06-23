@@ -522,6 +522,18 @@ def debug_mi_dropbox(dropbox_token: str):
 # =========================================================
 def pipeline_run():
 
+    log_lines = []
+
+    def log(msg: str):
+        log_lines.append(msg)
+
+    today = date.today()
+
+    # storico  
+    df_historical = load_from_dropbox(
+        "/forecast_pun/dataset_history.parquet",
+        st.secrets["DROPBOX_TOKEN"]).copy()
+    
     df_historical = df_historical.sort_index().asfreq("15min").ffill()
 
     last_date = df_historical.index.max()
