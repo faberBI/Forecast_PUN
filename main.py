@@ -1180,7 +1180,8 @@ if uploaded_file is not None:
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
         # ✅ FIX TIMEZONE PER MERGE# ✅ FIX TIMEZONE PERdf_forecast["Datetime"] = (
-        df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
+        
+        df_forecast["Datetime"] = (df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
 
         st.info(f"Forecast caricati: {len(df_forecast)} righe")
         # limite sui reali disponibili
@@ -1778,7 +1779,7 @@ if run_pipeline:
         ).copy()
 
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
-        df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
+        df_forecast["Datetime"] = (df_forecast["Datetime"].dt.tz_convert("Europe/Rome").dt.tz_localize(None))
         all_eval = []
 
         for col in df_real.columns:
