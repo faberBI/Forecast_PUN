@@ -782,11 +782,12 @@ with right:
 # =========================================================
 WINDOW = 96 * 7   # 7 giorni
 
-
 if run_update:
     try:
         with st.spinner("🚀 Aggiornamento dataset in corso..."):
             df_updated, logs = pipeline_run()
+            st.write(logs)
+            st.write(df_updated)
             drift_cols = [c for c in df_updated.columns if c != "PUN"]
             # ✅ DRIFT CHECK
             drift_df = ks_drift(
@@ -841,11 +842,8 @@ if run_update:
     except Exception as e:
         st.error(f"❌ Errore durante l'aggiornamento: {e}")
         st.code(traceback.format_exc(), language="python")
-
   
 st.divider()
-
-
 # =========================================================
 # VIEW DATA
 # =========================================================
@@ -856,9 +854,6 @@ if df_historical is not None:
 
     df_view = df_historical.copy()
     st.dataframe(df_view.tail(50), use_container_width=True)
-
-
-
 
 st.subheader("📦 Preview DB aggiornato")
 
@@ -881,8 +876,6 @@ try:
 except:
     st.warning("⚠️ Nessun dato disponibile su Dropbox")
 
-
-
 # =========================================================
 # LOAD MODEL FROM DROPBOX
 # =========================================================
@@ -892,7 +885,6 @@ import json
 import joblib
 import traceback
 import dropbox
-
 
 try:
     import pipeline  
@@ -1074,9 +1066,7 @@ try:
 except:
     st.warning("⚠️ Dataset non disponibile su Dropbox")
     st.stop()
-#
-
-
+    
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
 FORECAST_PATH = "dati_output/forecast_history.parquet"
