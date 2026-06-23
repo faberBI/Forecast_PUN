@@ -1573,24 +1573,52 @@ class EntsoeDownloader:
     # ======================================================
     def build_features(self):
 
+        # =========================
+        # 1. BUILD BASE DF
+        # =========================
         df = self.build_dataframe()
 
+        # sicurezza
         df["Timestamp"] = pd.to_datetime(df["Timestamp"])
 
+        # =========================
+        # 2. FEATURE NAME
+        # =========================
         df["feature"] = df["Zone"] + "_" + df["ProductionType"]
 
-        df = (
-            df.pivot_table(
-                index="Timestamp",
-                columns="feature",
-                values="MW",
-                aggfunc="mean"
-            )
-            .asfreq("15min")
-            .ffill()
-            .reset_index()
+        # =========================
+        # 3. PIVOT → TIME SERIES
+        # =========================
+        df = df.pivot_table(
+             index="Timestamp",
+            columns="feature",
+            values="MW",
+            aggfunc="mean"
         )
 
+        # =========================
+        # 4. GRID 15 MIN
+        # =========================
+        df = df.asfreq("15min")
+
+        # =========================
+        # 5. FILL MISSING
+        # =========================
+        df = df.ffill()
+
+        # =========================
+        # ✅ 6. FIX TIMEZONE (CRITICO)
+        # =========================
+        df.index = (
+            df.index
+            .tz_convert("Europe/Rome")   # porta a ora Italia
+            .tz_localize(None)           # rimuove +01:00
+        )
+
+        # =========================
+        # ✅ OUTPUT
+        # =========================
+        # index → 2026-03-20 01:15:00 ✅
         return df
 
 
