@@ -838,13 +838,6 @@ st.subheader("📚 Preview DB storico")
 if df_historical is not None:
 
     df_view = df_historical.copy()
-
-    df_view.index = (
-        df_view.index
-        .tz_convert("Europe/Rome")
-        .tz_localize(None)
-    )
-
     st.dataframe(df_view.tail(50), use_container_width=True)
 
 
@@ -866,12 +859,6 @@ try:
 
     # ✅ FIX TIMEZONE (SOLO VISUALIZZAZIONE)
     df_view1 = df_output.copy()
-    df_view1.index = (
-        df_view1.index
-        .tz_convert("Europe/Rome")
-        .tz_localize(None)
-    )
-
     st.dataframe(df_view1.tail(50), use_container_width=True)
 
 except:
