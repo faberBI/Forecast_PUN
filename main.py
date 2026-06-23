@@ -756,7 +756,7 @@ with left:
 with right:
     st.info(
         "Il bottone esegue la pipeline completa: "
-        "PUN + Meteo + Terna → merge → feature engineering → allineamento schema → salvataggio parquet."
+        "PUN + Meteo + Terna + Entso-e→ merge → feature engineering → allineamento schema → salvataggio parquet."
     )
 
 
