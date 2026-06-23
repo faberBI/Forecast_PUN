@@ -212,9 +212,6 @@ def merge_all(pun_df: pd.DataFrame, meteo_df: pd.DataFrame, terna_df: pd.DataFra
     df = df.merge(terna_df, on="Datetime", how="left")
     return df
 
-
-
-
 def add_features(df):
     df = df.copy()
 
@@ -1047,7 +1044,11 @@ import io
 def dbx_path(*parts):
     return "/" + "/".join([str(p).strip("/") for p in parts])
 
+def load_config_mi():
+    with open("config/config_mi.yaml", "r") as f:
+        return yaml.safe_load(f)
 
+MI = load_config_mi()["mi"]
 MI_DROPBOX_ROOT = MI["dropbox"]["root"]
 
 MI_DATASETS_DIR = dbx_path(MI_DROPBOX_ROOT, MI["dropbox"]["datasets_dir"])
