@@ -1007,6 +1007,23 @@ def load_model_artifacts_from_dropbox(force_download: bool = False):
         raise
 
 
+def compute_sample_weights(index: pd.DatetimeIndex) -> np.ndarray:
+    """Peso per ogni timestamp in base alla fascia oraria (off-peak/midday/evening)."""
+    qod = quarter_of_day(index)
+    weights = np.full(len(index), OFFPEAK_WEIGHT_BASE, dtype=float)
+    weights[np.isin(qod, list(MIDDAY_QOD))] = MIDDAY_WEIGHT
+    weights[np.isin(qod, list(EVENING_QOD))] = EVENING_WEIGHT
+    return weights
+
+
+def weight_func(index: pd.DatetimeIndex) -> np.ndarray:
+    """
+    Firma richiesta da skforecast: ForecasterDirect chiama questa funzione
+    con l'indice temporale dei dati di training e usa il risultato come
+    sample_weight per ciascuno dei modelli step-wise.
+    """
+    return compute_sample_weights(index)
+
 force_model_download = st.sidebar.button("🔁 Forza download modello da Dropbox")
 
 artifacts = load_model_artifacts_from_dropbox(
