@@ -1067,13 +1067,6 @@ if run_forecast:
     # ✅ FIX TIMEZONE SOLO PER DISPLAY
     # ==========================================
     preds_view = preds.copy()
-
-    preds_view.index = (
-        preds_view.index
-        .tz_convert("Europe/Rome")
-        .tz_localize(None)
-    )
-
     st.subheader("📊 Preview Forecast")
     st.dataframe(preds_view.tail(50), use_container_width=True)
 
