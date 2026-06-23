@@ -651,15 +651,15 @@ def pipeline_run():
     # MERGE
     # =========================
     log("Merge dataset...")
-
     df_new_raw = merge_all(pun_df, meteo_df, terna_df)
-
     df_new_raw["Datetime"] = pd.to_datetime(df_new_raw["Datetime"])
     df_new_raw = df_new_raw.set_index("Datetime")
-
+    st.write(df_new_raw)
+    st.write(entsoe_feat)
+    
     # ✅ join ENTSOE (CORRETTO)
     df_new_raw = df_new_raw.join(entsoe_feat, how="left")
-
+    st.write(df_new_raw)
     df_new_raw = df_new_raw.reset_index()
 
     # =========================
