@@ -1,706 +1,142 @@
-import os
 import traceback
 from datetime import date
 import numpy as np
 import pandas as pd
 import streamlit as st
-from scipy.stats import ks_2samp
-import plotly.graph_objects as go
-import yaml
-import dropbox
 
-from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox, EntsoeDownloader)
-from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
-
-
-from functions.forecast_mi import (forecast_next_96_all_mi_models_dropbox)
+from functions.create_datasets import (
+    PUNFeatureEngineering, MeteoDownloader, TernaClient,
+    ks_drift, upload_to_dropbox, load_from_dropbox, EntsoeDownloader
+)
 
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
 
-CONFIG_PATH = "config/config.yaml"
-
-@st.cache_data
-def load_config():
-    with open(CONFIG_PATH, "r") as f:
-        return yaml.safe_load(f)
-
-
-def load_config_mi():
-    with open("config/config_mi.yaml", "r") as f:
-        return yaml.safe_load(f)
-
-
-config = load_config()
-MI = load_config_mi()["mi"]
-
-FEATURES_OLD = config["features"]["FEATURES_OLD"]
-FEATURES_NEW = config["features"]["FEATURES_NEW"]
-SELECTED_EXOG = config["features"]["SELECTED_EXOG"]
-
-# =========================================================
-# CONFIG UI
-# =========================================================
 st.title("⚡ PUN Dataset Manager")
-st.caption("Aggiornamento dataset intraday PUN / Meteo / Terna/ Entsoe")
-import dropbox
 
-# =========================================================
-# PATH CONFIG
-# =========================================================
-HISTORICAL_PATH = "dati_input/final_dataset_historical.parquet"
 OUTPUT_PATH = "dati_output/final_dataset_intra_day.parquet"
 PUN_INPUT_PATH = "dati_input/Add_on_PUN.xlsx"
 
+LOCATION_SAMPLE = {"name": "roma", "lat": 41.9, "lon": 12.5}
 
 
 # =========================================================
-# CONSTANTS
-# =========================================================
-LOCATIONS = [
-    {"name": "milano", "lat": 45.4642, "lon": 9.1900},
-    {"name": "torino", "lat": 45.0703, "lon": 7.6869},
-    {"name": "roma", "lat": 41.9028, "lon": 12.4964},
-    {"name": "bologna", "lat": 44.4949, "lon": 11.3426},
-    {"name": "bari", "lat": 41.1171, "lon": 16.8719},
-    {"name": "palermo", "lat": 38.1157, "lon": 13.3615},
-]
-
-FEATURES_DROP = ["Data", "Ora", "Periodo", "date", "target", "Minute"]
-
-
-# =========================================================
-# LOADERS
-# =========================================================
-@st.cache_data(show_spinner=False)
-def load_historical(path: str) -> pd.DataFrame:
-    df = pd.read_parquet(path)
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "Datetime" in df.columns:
-            df["Datetime"] = pd.to_datetime(df["Datetime"])
-            df = df.set_index("Datetime")
-    df = df.sort_index()
-    return df
-
-
-@st.cache_data(show_spinner=False)
-def load_output_if_exists(path: str):
-    if os.path.exists(path):
-        df = pd.read_parquet(path)
-        if not isinstance(df.index, pd.DatetimeIndex):
-            if "Datetime" in df.columns:
-                df["Datetime"] = pd.to_datetime(df["Datetime"])
-                df = df.set_index("Datetime")
-        df = df.sort_index()
-        return df
-    return None
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-def shift_terna_only(df: pd.DataFrame, shift_steps: int = 1) -> pd.DataFrame:
-    """
-    Shifta SOLO le feature Terna per evitare leakage.
-    """
-    df = df.copy()
-
-    terna_cols = [
-        "forecast_total_load_MW",
-        "actual_generation_GWh",
-        "actual_generation_GWh_solar",
-        "actual_generation_GWh_hydro",
-        "load_ramp_1h",
-        "load_forecast_error",
-    ]
-
-    cols_to_shift = [c for c in terna_cols if c in df.columns]
-    df[cols_to_shift] = df[cols_to_shift].shift(shift_steps)
-
-    return df
-
-
-def aggregate_meteo(df: pd.DataFrame) -> pd.DataFrame:
-    def mean_cols(substr):
-        cols = [c for c in df.columns if substr in c]
-        return df[cols].mean(axis=1) if cols else np.nan
-
-    df = df.copy()
-    df["temperature_mean"] = mean_cols("temperature_2m")
-    df["cloud_cover_mean"] = mean_cols("cloud_cover")
-    df["wind_speed_mean"] = mean_cols("wind_speed_80m")
-
-    precip = [c for c in df.columns if "precipitation" in c]
-    if precip:
-        df["precipitation_mean"] = df[precip].mean(axis=1)
-
-    return df
-
-
-def prepare_meteo(meteo, start_date_meteo: str, end_date_meteo: str) -> pd.DataFrame:
-    df = meteo.download_multi_city(LOCATIONS, start_date_meteo, end_date_meteo)
-    df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.floor("h")
-    df = df.groupby("Datetime").mean(numeric_only=True).reset_index()
-    df = aggregate_meteo(df)
-
-    # hourly -> 15min
-    df = (
-        df.set_index("Datetime")
-          .sort_index()
-          .resample("15min")
-          .ffill()
-          .reset_index()
-    )
-
-    return df
-
-
-def prepare_pun(pun_fe, pun_path: str) -> pd.DataFrame:
-    raw = pd.read_excel(pun_path)
-    df = pun_fe.prepare_dataset(raw, merge_commodities=True)
-
-    # Il PUN è già quarter-hour tramite Data/Ora/Periodo
-    df["Datetime"] = pd.to_datetime(df["Datetime"])
-
-    return df
-
-def prepare_terna(terna, start, end):
-    def clean(df):
-        return terna.clean_terna_df(df)
-
-    load = clean(terna.get_total_load(start, end))
-    market = clean(terna.get_market_load(start, end))
-
-    wind = clean(terna.get_generation(start, end, "Wind")).rename(
-        columns={"actual_generation_MW": "wind_generation_MW"}
-    )
-    solar = clean(terna.get_generation(start, end, "Photovoltaic")).rename(
-        columns={"actual_generation_MW": "solar_generation_MW"}
-    )
-    hydro = clean(terna.get_generation(start, end, "Hydro")).rename(
-        columns={"actual_generation_MW": "hydro_generation_MW"}
-    )
-
-    df = load.merge(market, on="date", how="outer")
-    df = terna.safe_merge(df, wind, "wind")
-    df = terna.safe_merge(df, solar, "solar")
-    df = terna.safe_merge(df, hydro, "hydro")
-
-    df = terna.clean_terna_features(df)
-
-    numeric_cols = [
-        "total_load_MW",
-        "market_load_MW",
-        "forecast_total_load_MW",
-        "forecast_market_load_MW",
-        "actual_generation_GWh",
-        "actual_generation_GWh_solar",
-        "actual_generation_GWh_hydro",
-        "load_ramp_1h",
-    ]
-
-    for c in numeric_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    df["Datetime"] = pd.to_datetime(df["date"])
-
-    # hourly -> 15min
-    df = (
-        df.set_index("Datetime")
-          .sort_index()
-          .resample("15min")
-          .ffill()
-          .reset_index()
-    )
-
-    return df
-
-
-def merge_all(pun_df: pd.DataFrame, meteo_df: pd.DataFrame, terna_df: pd.DataFrame) -> pd.DataFrame:
-    df = pun_df.merge(meteo_df, on="Datetime", how="left")
-    df = df.merge(terna_df, on="Datetime", how="left")
-    return df
-
-
-
-
-def add_features(df):
-    df = df.copy()
-
-    numeric_cols = [
-        "total_load_MW",
-        "actual_generation_MW",
-        "renewable_generation_MW",
-        "forecast_total_load_MW",
-        "actual_generation_GWh",
-        "actual_generation_GWh_solar",
-        "actual_generation_GWh_hydro",
-    ]
-
-    for c in numeric_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    if {"total_load_MW", "actual_generation_MW"} <= set(df.columns):
-        df["net_load"] = df["total_load_MW"] - df["actual_generation_MW"]
-
-    if {"renewable_generation_MW", "total_load_MW"} <= set(df.columns):
-        df["renewable_share"] = df["renewable_generation_MW"] / (df["total_load_MW"] + 1e-6)
-
-    if "total_load_MW" in df.columns:
-        df["load_ramp_1h"] = df["total_load_MW"].diff(4)
-
-    if {"forecast_total_load_MW", "total_load_MW"} <= set(df.columns):
-        df["load_forecast_error"] = df["forecast_total_load_MW"] - df["total_load_MW"]
-
-    return df
-
-def make_quarter_hour(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    df["Minute"] = np.tile([0, 15, 30, 45], len(df) // 4 + 1)[: len(df)]
-    df["Datetime"] = df["Datetime"] + pd.to_timedelta(df["Minute"], unit="m")
-
-    df = df.set_index("Datetime").sort_index()
-    df = df[~df.index.duplicated()]
-    df = df.asfreq("15min")
-    df = df.reset_index()
-
-    return df
-
-
-def validate_required_columns(df: pd.DataFrame, required_cols: list, df_name: str):
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"{df_name}: mancano le colonne richieste: {missing}")
-
-
-def debug_mi_dropbox(dropbox_token: str):
-
-    st.subheader("🧪 Debug MI Dropbox")
-    # 5. CHECK MODELS FROM JSON
-    # =====================================================
-    for nome_df, targets in results.items():
-
-        if not isinstance(targets, dict):
-            continue
-
-        for target, res in targets.items():
-
-            if not isinstance(res, dict):
-                continue
-
-            if res.get("status") != "ok":
-                continue
-
-            raw_model_path = res.get("model_path")
-
-            if not raw_model_path:
-                report["models_missing"].append(f"{nome_df}/{target} -> model_path mancante")
-                continue
-
-            # pulizia path Windows/Linux
-            clean_path = str(raw_model_path).replace("\\", "/").strip()
-            file_name = os.path.basename(clean_path)
-
-            # evita controlli duplicati
-            if file_name in checked_models:
-                continue
-
-            checked_models.add(file_name)
-
-            if file_name not in available_models:
-                report["models_missing"].append(file_name)
-                continue
-
-            real_dropbox_path = available_models[file_name]
-
-            try:
-                _, file_res = dbx.files_download(real_dropbox_path)
-
-                payload = joblib.load(io.BytesIO(file_res.content))
-
-                for key in ["forecaster", "selected_exog", "target"]:
-                    if key not in payload:
-                        report["payload_errors"].append(
-                            f"{file_name} missing '{key}'"
-                        )
-
-                report["models_ok"].append(file_name)
-
-            except Exception as e:
-                report["models_missing"].append(f"{file_name} -> {e}")
-
-    # =====================================================
-    # OUTPUT
-    # =====================================================
-    st.write("✅ Dataset OK:", len(report["datasets_ok"]))
-    st.write("❌ Dataset missing:", report["datasets_missing"])
-
-    st.write("✅ Models OK:", len(report["models_ok"]))
-    st.write("❌ Models missing:", report["models_missing"])
-
-    if report["payload_errors"]:
-        st.warning("⚠️ Payload errors:")
-        st.write(report["payload_errors"])
-
-    st.write("🔎 JSON vs datasets:")
-    st.json(report["json_vs_datasets"])
-
-    if (
-        not report["datasets_missing"]
-        and not report["models_missing"]
-        and not report["payload_errors"]
-    ):
-        st.success("✅ Sistema MI pronto")
-    else:
-        st.error("❌ Problemi trovati")
-
-    return report
-
-
-    dbx = dropbox.Dropbox(dropbox_token)
-
-    report = {
-        "datasets_ok": [],
-        "datasets_missing": [],
-        "models_ok": [],
-        "models_missing": [],
-        "payload_errors": [],
-        "json_vs_datasets": {}
-    }
-
-    # =====================================================
-    # 1. CHECK DATASETS
-    # =====================================================
-    for nome in colonne_analisi_mi:
-        file_name = f"MI_{nome}.parquet"
-        path = f"{MI_DATASETS_DIR}/{file_name}"
-
-        try:
-            dbx.files_get_metadata(path)
-            report["datasets_ok"].append(file_name)
-        except Exception as e:
-            report["datasets_missing"].append(f"{file_name} -> {e}")
-
-    # =====================================================
-    # 2. LOAD JSON
-    # =====================================================
-    try:
-        results = load_mi_json_from_dropbox(dropbox_token)
-        st.success("✅ JSON OK")
-    except Exception as e:
-        st.error(f"❌ JSON ERROR: {e}")
-        return report
-
-    # =====================================================
-    # 3. CHECK JSON VS DATASETS
-    # =====================================================
-    json_keys = set(results.keys())
-    dfs_keys = set([make_market_key(x) for x in colonne_analisi_mi])
-
-    report["json_vs_datasets"] = {
-        "common": sorted(json_keys & dfs_keys),
-        "json_not_in_dfs": sorted(json_keys - dfs_keys),
-        "dfs_not_in_json": sorted(dfs_keys - json_keys),
-    }
-
-    # =====================================================
-    # 4. LIST MODELS FOLDER ONCE
-    # =====================================================
-    try:
-        folder_res = dbx.files_list_folder(MI_MODELS_DIR)
-
-        available_models = {
-            entry.name: entry.path_display
-            for entry in folder_res.entries
-            if entry.name.endswith(".joblib")
-        }
-
-    except Exception as e:
-        st.error(f"❌ Errore lettura cartella modelli: {MI_MODELS_DIR} -> {e}")
-        return report
-
-    # evita doppioni se stesso file appare più volte nel JSON
-    checked_models = set()
-
-
-
-    # =========================================================
-    # 3. CHECK MATCH KEYS
-    # =========================================================
-    dfs_keys = [make_market_key(x) for x in colonne_analisi_mi]
-    json_keys = list(results.keys())
-
-    report["json_vs_datasets"] = {
-        "common": list(set(json_keys) & set(dfs_keys)),
-        "json_not_in_dfs": list(set(json_keys) - set(dfs_keys)),
-        "dfs_not_in_json": list(set(dfs_keys) - set(json_keys))
-    }
-
-    # =========================================================
-    # 4. CHECK MODELS
-    # =========================================================
-    st.write("🤖 Checking models...")
-
-    for nome_df, targets in results.items():
-
-        for target, res in targets.items():
-
-            if not isinstance(res, dict):
-                continue
-
-            if res.get("status") != "ok":
-                continue
-
-            model_path = res.get("model_path")
-
-            if not model_path:
-                report["models_missing"].append(f"{nome_df}/{target} (no path)")
-                continue
-
-            # resolve path
-            if not model_path.startswith("/"):
-                model_path = f"{MI_MODELS_DIR}/{os.path.basename(model_path)}"
-
-            try:
-                _, res_file = dbx.files_download(model_path)
-                report["models_ok"].append(model_path)
-
-                # CHECK PAYLOAD
-                try:
-                    payload = joblib.load(io.BytesIO(res_file.content))
-
-                    for key in ["forecaster", "selected_exog", "target"]:
-                        if key not in payload:
-                            report["payload_errors"].append(
-                                f"{model_path} missing '{key}'"
-                            )
-
-                except Exception as e:
-                    report["payload_errors"].append(
-                        f"{model_path} corrupted: {e}"
-                    )
-            #
-            except Exception as e:
-                report["models_missing"].append(f"{model_path} -> {str(e)}")
-
-
-    # =========================================================
-    # OUTPUT
-    # =========================================================
-    st.subheader("📊 Report")
-
-    st.write("✅ Dataset OK:", len(report["datasets_ok"]))
-    st.write("❌ Dataset mancanti:", report["datasets_missing"])
-
-    st.write("✅ Modelli OK:", len(report["models_ok"]))
-    st.write("❌ Modelli mancanti:", report["models_missing"])
-
-    if report["payload_errors"]:
-        st.warning("⚠️ Problemi payload modelli:")
-        st.write(report["payload_errors"])
-
-    st.write("🔎 JSON vs datasets:")
-    st.json(report["json_vs_datasets"])
-
-    if (
-        not report["datasets_missing"]
-        and not report["models_missing"]
-        and not report["payload_errors"]
-        and not report["json_vs_datasets"]["json_not_in_dfs"]
-        and not report["json_vs_datasets"]["dfs_not_in_json"]
-    ):
-        st.success("✅ TUTTO OK - pronto per forecast MI")
-    else:
-        st.error("❌ Problemi trovati")
-
-    return report
-
-# =========================================================
-# CORE PIPELINE
+# PIPELINE
 # =========================================================
 def pipeline_run():
 
     log_lines = []
 
-    def log(msg: str):
+    def log(msg):
         log_lines.append(msg)
 
-    today = date.today()
+    log("🚀 START PIPELINE")
 
     # =========================
-    # LOAD STORICO
+    # LOAD DB
     # =========================
     df_historical = load_from_dropbox(
         "/forecast_pun/dataset_history.parquet",
         st.secrets["DROPBOX_TOKEN"]
     ).copy()
 
-    if not isinstance(df_historical.index, pd.DatetimeIndex):
-        df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
-        df_historical = df_historical.set_index("Datetime")
-
-    # ✅ timezone safe
-    if df_historical.index.tz is not None:
-        df_historical.index = (
-            df_historical.index
-            .tz_convert("Europe/Rome")
-            .tz_localize(None)
-        )
-
+    df_historical["Datetime"] = pd.to_datetime(df_historical.index)
     df_historical = df_historical.sort_index().asfreq("15min").ffill()
 
     last_date = df_historical.index.max()
-    # =========================
-    # LOOKBACK
-    # =========================
-    LOOKBACK_DAYS = 8  
-    lookback_start_dt = pd.Timestamp(last_date).floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
-    end_date_dt = pd.Timestamp(today)
 
-    START_DATE_METEO = lookback_start_dt.strftime("%Y-%m-%d")
-    END_DATE_METEO = end_date_dt.strftime("%Y-%m-%d")
-
-    START_DATE_TERNA = lookback_start_dt.strftime("%d/%m/%Y")
-    END_DATE_TERNA = end_date_dt.strftime("%d/%m/%Y")
-
-    START_DATE_PUN = lookback_start_dt.strftime("%Y-%m-%d")
-
-    log(f"Ultima data storico: {last_date}")
+    log(f"Last storico: {last_date}")
 
     # =========================
     # PUN
     # =========================
-    pun_fe = PUNFeatureEngineering(start=START_DATE_PUN, pun_col="PUN")
+    pun_fe = PUNFeatureEngineering(start=str(last_date.date()), pun_col="PUN")
 
-    log("Preparazione PUN...")
+    pun_new = pd.read_excel(PUN_INPUT_PATH)
+    pun_new = pun_fe.prepare_dataset(pun_new, merge_commodities=True)
 
-    pun_hist = df_historical.reset_index()[["Datetime", "PUN"]].copy()
-    pun_df_new = prepare_pun(pun_fe, PUN_INPUT_PATH)[["Datetime", "PUN"]].copy()
+    pun_new["Datetime"] = pd.to_datetime(pun_new["Datetime"])
 
-    pun_full = pd.concat([pun_hist, pun_df_new], ignore_index=True)
+    log(f"PUN max: {pun_new['Datetime'].max()}")
+
+    pun_full = pd.concat([
+        df_historical.reset_index()[["Datetime", "PUN"]],
+        pun_new[["Datetime", "PUN"]]
+    ])
 
     pun_full = (
         pun_full
-        .drop_duplicates(subset=["Datetime"], keep="last")
+        .drop_duplicates("Datetime", keep="last")
         .sort_values("Datetime")
     )
-
-    # feature PUN
-    pun_full["lag_2d"] = pun_full["PUN"].shift(96*2)
-    pun_full["lag_7d"] = pun_full["PUN"].shift(96*7)
-
-    pun_full["pun_ret_1d"] = pun_full["PUN"].pct_change(96).shift(1)
-    pun_full["pun_ret_7d"] = pun_full["PUN"].pct_change(96*7).shift(1)
-
-    pun_full["momentum_1d"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(96)
-    pun_full["pun_ret_1h"] = pun_full["PUN"].pct_change(4).shift(1)
-    pun_full["momentum_4h"] = pun_full["PUN"].shift(1) - pun_full["PUN"].shift(16)
-
-    pun_full["minute"] = pd.to_datetime(pun_full["Datetime"]).dt.minute
-
-    pun_df = pun_full[pun_full["Datetime"] >= lookback_start_dt].copy()
 
     # =========================
     # METEO
     # =========================
-    log("Preparazione Meteo...")
     meteo = MeteoDownloader()
-    meteo_df = prepare_meteo(meteo, START_DATE_METEO, END_DATE_METEO)
+
+    meteo_df = pd.DataFrame({
+        "Datetime": pun_full["Datetime"]
+    })
 
     # =========================
     # TERNA
     # =========================
-    log("Preparazione Terna...")
-
     terna = TernaClient(
         client_id=st.secrets["TERNA_CLIENT_ID"],
         client_secret=st.secrets["TERNA_CLIENT_SECRET"]
     )
 
-    terna_df = prepare_terna(terna, START_DATE_TERNA, END_DATE_TERNA)
-    terna_df = shift_terna_only(terna_df, shift_steps=1)
+    terna_df = pd.DataFrame({
+        "Datetime": pun_full["Datetime"]
+    })
 
     # =========================
-    # 🔥 ENTSOE (FIXATO)
+    # ENTSOE
     # =========================
-    log("Preparazione ENTSOE...")
-
-    ZONES = [
-        ("NORD", "10Y1001A1001A73I"),
-        ("CNOR", "10Y1001A1001A70O"),
-        ("CSUD", "10Y1001A1001A71M"),
-        ("SUD",  "10Y1001A1001A788"),
-        ("SARD", "10Y1001A1001A74G"),
-        ("SICI", "10Y1001A1001A75E"),
-        ("CALA", "10Y1001C--00096J")
-    ]
+    log("ENTSOE...")
 
     entsoe = EntsoeDownloader(
         token=st.secrets["ENTSOE_TOKEN"],
-        zones=ZONES,
-        start_date=lookback_start_dt.to_pydatetime(),
-        end_date=end_date_dt.to_pydatetime()
+        zones=[("NORD", "10Y1001A1001A73I")],
+        start_date=pun_full["Datetime"].min().to_pydatetime(),
+        end_date=date.today()
     )
 
     entsoe_feat = entsoe.build_features()
 
+    log(f"ENTSOE max: {entsoe_feat.index.max()}")
+
     # =========================
     # MERGE
     # =========================
-    log("Merge dataset...")
-    df_new_raw = merge_all(pun_df, meteo_df, terna_df)
-    df_new_raw["Datetime"] = pd.to_datetime(df_new_raw["Datetime"])
-    df_new_raw = df_new_raw.set_index("Datetime")
-    
-    log(f"MAX pun_full: {pun_full['Datetime'].max()}")
-    log(f"MAX meteo: {meteo_df['Datetime'].max()}")
-    log(f"MAX terna: {terna_df['Datetime'].max()}")
-    log(f"MAX entsoe: {entsoe_feat.index.max()}")
+    df_new = pun_full.copy()
 
-    # ✅ join ENTSOE (CORRETTO)
-    df_new_raw = df_new_raw.join(entsoe_feat, how="left")
-    df_new_raw = df_new_raw.reset_index()
+    df_new = df_new.set_index("Datetime")
+    df_new = df_new.join(entsoe_feat, how="left")
+    df_new = df_new.reset_index()
 
     # =========================
-    # FEATURE ENGINEERING
-    # =========================
-    log("Feature engineering...")
-    df_new = add_features(df_new_raw)
-
-    df_new.drop(columns=FEATURES_DROP, errors="ignore", inplace=True)
-
-    # =========================
-    # KEEP SOLO NUOVE
+    # SOLO NUOVE
     # =========================
     df_new["Datetime"] = pd.to_datetime(df_new["Datetime"])
-    df_new = df_new[df_new["Datetime"] > last_date].copy()
+
+    df_new = df_new[df_new["Datetime"] > last_date]
+
+    log(f"Nuove righe: {len(df_new)}")
 
     # =========================
-    # VALIDAZIONE
+    # FINAL
     # =========================
-    missing = [c for c in FEATURES_NEW if c not in df_new.columns]
-    if missing:
-        raise ValueError(f"❌ Feature mancanti: {missing}")
+    df_final = pd.concat([
+        df_historical.reset_index(),
+        df_new
+    ])
 
-    # =========================
-    # FINAL DATASET
-    # =========================
-    df_old = df_historical[FEATURES_OLD].reset_index()
-    df_new = df_new[FEATURES_NEW].copy()
-
-    df_final = pd.concat([df_old, df_new], ignore_index=True)
-
-    df_final = df_final.drop_duplicates(subset=["Datetime"], keep="last")
+    df_final = df_final.drop_duplicates("Datetime")
     df_final = df_final.sort_values("Datetime")
-    df_final.set_index("Datetime", inplace=True)
+    df_final = df_final.set_index("Datetime")
 
-    # =========================
-    # CHECK
-    # =========================
-    assert df_final.index.is_monotonic_increasing
-    assert df_final.index.is_unique
+    log(f"Final max: {df_final.index.max()}")
 
     # =========================
     # SAVE
@@ -713,169 +149,49 @@ def pipeline_run():
         st.secrets["DROPBOX_TOKEN"]
     )
 
-    log("✅ Dataset aggiornato con ENTSOE")
+    log("✅ SALVATO")
 
     return df_final, log_lines
-    def log(msg):
-        log_lines.append(msg)
-
-    # =========================
-    # LOAD STORICO
-    # =========================
-    df_historical = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"]
-    ).copy()
-
-    if not isinstance(df_historical.index, pd.DatetimeIndex):
-        df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
 
 
 # =========================================================
-# UI - STATUS
+# UI
 # =========================================================
-col1, col2 = st.columns(2)
-df_historical = None
+df_historical = load_from_dropbox(
+    "/forecast_pun/dataset_history.parquet",
+    st.secrets["DROPBOX_TOKEN"]
+)
 
-try:  
-    df_historical = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"]).copy()
+st.write("Last storico:", df_historical.index.max())
 
-    if not isinstance(df_historical.index, pd.DatetimeIndex):
-        df_historical["Datetime"] = pd.to_datetime(df_historical["Datetime"])
-        df_historical = df_historical.set_index("Datetime")
+run = st.button("🔄 Aggiorna DB")
 
-    df_historical = df_historical.sort_index()
+WINDOW = 96 * 7
 
-    last_hist_date = df_historical.index.max()
+if run:
 
-    with col1:
-        st.metric("📅 Ultima data DB storico", str(last_hist_date))
+    st.write("CLICK ✅")
 
-except Exception as e:
-    with col1:
-        st.warning("⚠️ Dropbox non disponibile")
-        st.metric("📅 Ultima data DB storico", "non disponibile")
-
-
-
-st.divider()
-
-
-# =========================================================
-# UI - CONTROL PANEL
-# =========================================================
-left, right = st.columns([1, 2])
-
-with left:
-    run_update = st.button("🔄 Aggiorna dataset", use_container_width=True)
-
-with right:
-    st.info(
-        "Il bottone esegue la pipeline completa: "
-        "PUN + Meteo + Terna + Entso-e→ merge → feature engineering → allineamento schema → salvataggio parquet."
-    )
-
-
-# =========================================================
-# EXECUTION
-# =========================================================
-WINDOW = 96 * 7   # 7 giorni
-
-if run_update:
     try:
-        with st.spinner("🚀 Aggiornamento dataset in corso..."):
-            df_updated, logs = pipeline_run()
-            st.write(logs)
-            st.write(df_updated)
-            drift_cols = [c for c in df_updated.columns if c != "PUN"]
-            # ✅ DRIFT CHECK
-            drift_df = ks_drift(
-                df_historical.tail(WINDOW),
-                df_updated.tail(WINDOW),
-                drift_cols
-            )
+        df_updated, logs = pipeline_run()
 
-            st.subheader("📊 Covariate Drift (KS Test)")
+        st.write("LOG:", logs)
 
-            if not drift_df.empty:
-                st.dataframe(drift_df)
+        st.write("UPDATED MAX:", df_updated.index.max())
 
-
-                n_drift = drift_df["drift_flag"].sum()
-
-                if n_drift >= 5:
-                    st.error("🚨 Drift forte → retrain consigliato")
-                elif n_drift > 0:
-                    st.warning("⚠️ Drift moderato → monitorare")
-                else:
-                    st.success("✅ Nessun drift significativo")
-
-            else:
-                st.warning("⚠️ Drift non calcolabile (dati insufficienti)")
-
-        st.success("✅ Dataset aggiornato correttamente")
-
-        st.subheader("📝 Log esecuzione")
-        st.code("\n".join(logs), language="text")
-
-        st.subheader("📊 Preview dataset finale")
-        st.dataframe(df_updated.tail(100), use_container_width=True)
-
-        st.subheader("📈 Info dataset finale")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Righe", f"{len(df_updated):,}".replace(",", "."))
-        c2.metric("Colonne", df_updated.shape[1])
-        c3.metric("Ultima data", str(df_updated.index.max()))
-
-        st.download_button(
-            label="⬇️ Scarica snapshot CSV (ultime 500 righe)",
-            data=df_updated.tail(500).to_csv(index=True).encode("utf-8"),
-            file_name="final_dataset_intra_day_last500.csv",
-            mime="text/csv",
-            use_container_width=True,
+        drift = ks_drift(
+            df_historical.tail(WINDOW),
+            df_updated.tail(WINDOW),
+            [c for c in df_updated.columns if c != "PUN"]
         )
 
-        # invalida cache letture
-        st.cache_data.clear()
+        st.dataframe(drift)
+
+        st.success("✅ DONE")
 
     except Exception as e:
-        st.error(f"❌ Errore durante l'aggiornamento: {e}")
-        st.code(traceback.format_exc(), language="python")
-  
-st.divider()
-# =========================================================
-# VIEW DATA
-# =========================================================
-
-st.subheader("📚 Preview DB storico")
-
-if df_historical is not None:
-
-    df_view = df_historical.copy()
-    st.dataframe(df_view.tail(50), use_container_width=True)
-
-st.subheader("📦 Preview DB aggiornato")
-
-try:
-    df_output = load_from_dropbox(
-        "/forecast_pun/dataset_history.parquet",
-        st.secrets["DROPBOX_TOKEN"]
-    ).copy()
-
-    if not isinstance(df_output.index, pd.DatetimeIndex):
-        df_output["Datetime"] = pd.to_datetime(df_output["Datetime"])
-        df_output = df_output.set_index("Datetime")
-
-    df_output = df_output.sort_index()
-
-    # ✅ FIX TIMEZONE (SOLO VISUALIZZAZIONE)
-    df_view1 = df_output.copy()
-    st.dataframe(df_view1.tail(50), use_container_width=True)
-
-except:
-    st.warning("⚠️ Nessun dato disponibile su Dropbox")
+        st.error(str(e))
+        st.code(traceback.format_exc())
 
 # =========================================================
 # LOAD MODEL FROM DROPBOX
