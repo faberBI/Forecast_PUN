@@ -1530,7 +1530,7 @@ if not DROPBOX_TOKEN:
 
 
 # =========================================================
-# LOAD DATASETS (SOLO SE NON GIÀ IN MEMORIA)
+# LOAD DATASETS
 # =========================================================
 try:
     if "dfs_mi" not in st.session_state:
@@ -1545,10 +1545,28 @@ try:
 
     if dfs_mi:
         last_dt = max(v.index.max() for v in dfs_mi.values())
-        col2.metric("Ultima data", str(last_dt))
-        col3.metric("Mercati", len(colonne_analisi_mi))
+        col2.metric("Ultima data globale", str(last_dt))
+        col3.metric("Mercati", len(dfs_mi))
     else:
         col2.warning("Nessun dataset")
+
+    # =========================================================
+    # ✅ STATO PER MERCATO (QUESTO TI SERVE 🔥)
+    # =========================================================
+    st.subheader("📊 Stato aggiornamento per mercato")
+
+    status = []
+
+    for nome, df in dfs_mi.items():
+        status.append({
+            "market": nome,
+            "last_date": df.index.max(),
+            "rows": len(df)
+        })
+
+    df_status = pd.DataFrame(status).sort_values("last_date", ascending=False)
+
+    st.dataframe(df_status, use_container_width=True)
 
 except Exception:
     st.error("Errore loading MI")
@@ -1561,7 +1579,13 @@ except Exception:
 # =========================================================
 with st.expander("📚 Preview dataset"):
     mkt = st.selectbox("Mercato", list(dfs_mi.keys()), key="preview_mi")
-    st.dataframe(dfs_mi[mkt].tail(50), use_container_width=True)
+
+    df_sel = dfs_mi[mkt]
+
+    st.write("📅 Ultima data:", df_sel.index.max())
+    st.write("📦 Shape:", df_sel.shape)
+
+    st.dataframe(df_sel.tail(50), use_container_width=True)
 
 
 # =========================================================
