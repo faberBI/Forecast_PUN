@@ -1516,7 +1516,7 @@ def pipeline_run_mi():
 
     return updated_dfs, log_lines
 
-# ============================⚡ MI PIPELINE: UPDATE + FORECAST + MONITORING ⚡=========================== #
+# ============================⚡ MI PIPELINE ============================ #
 
 st.divider()
 st.header("⚡ MI Forecast + Monitoring")
@@ -1527,11 +1527,16 @@ if not DROPBOX_TOKEN:
     st.error("❌ DROPBOX_TOKEN mancante")
     st.stop()
 
+
 # =========================================================
-# LOAD DATASETS
+# LOAD DATASETS (SOLO SE NON GIÀ IN MEMORIA)
 # =========================================================
 try:
-    dfs_mi = load_mi_datasets_from_dropbox_cached(DROPBOX_TOKEN)
+    if "dfs_mi" not in st.session_state:
+        dfs_mi = load_mi_datasets_from_dropbox_cached(DROPBOX_TOKEN)
+        st.session_state["dfs_mi"] = dfs_mi
+    else:
+        dfs_mi = st.session_state["dfs_mi"]
 
     col1, col2, col3 = st.columns(3)
 
@@ -1545,45 +1550,34 @@ try:
         col2.warning("Nessun dataset")
 
 except Exception:
-    dfs_mi = {}
     st.error("Errore loading MI")
     st.code(traceback.format_exc())
+    st.stop()
 
 
 # =========================================================
 # PREVIEW
 # =========================================================
 with st.expander("📚 Preview dataset"):
-    if dfs_mi:
-        mkt = st.selectbox("Mercato", list(dfs_mi.keys()))
-        st.dataframe(dfs_mi[mkt].tail(50), use_container_width=True)
-    else:
-        st.warning("Niente dataset")
+    mkt = st.selectbox("Mercato", list(dfs_mi.keys()), key="preview_mi")
+    st.dataframe(dfs_mi[mkt].tail(50), use_container_width=True)
 
 
 # =========================================================
 # BUTTONS
 # =========================================================
-
 col1, col2 = st.columns(2)
 
-with col1:
-    run_update = st.button("🧱 Update DB + KS Drift", use_container_width=True)
-
-with col2:
-    run_forecast = st.button("📈 Forecast + Monitoring", use_container_width=True)
+run_update = col1.button("🧱 Update DB + KS Drift", use_container_width=True)
+run_forecast = col2.button("📈 Forecast + Monitoring", use_container_width=True)
 
 WINDOW = 96 * 7
 
 
 # =========================================================
-# ✅ BOTTONE 1: UPDATE DB + KS DRIFT
+# ✅ UPDATE DB + KS
 # =========================================================
 if run_update:
-
-    if not dfs_mi:
-        st.error("❌ Nessun dataset MI")
-        st.stop()
 
     try:
         st.subheader("🧱 Update dataset")
@@ -1593,11 +1587,28 @@ if run_update:
         with st.spinner("Aggiornamento DB MI..."):
             dfs_new, logs = pipeline_run_mi()
 
+        # ✅ REFRESH CACHE
+        st.cache_data.clear()
+
+        # ✅ UPDATE STATE
+        st.session_state["dfs_mi"] = dfs_new
+        dfs_mi = dfs_new
+
         st.success("✅ DB aggiornato")
         st.code("\n".join(logs))
 
+        # =======================
+        # DEBUG UPDATE 🔥
+        # =======================
+        st.subheader("📊 Update summary")
+
+        for nome in dfs_new:
+            old_len = len(dfs_old.get(nome, []))
+            new_len = len(dfs_new[nome])
+            st.write(f"{nome} → +{new_len - old_len} righe")
+
         # =========================================================
-        # 📊 KS DRIFT
+        # KS DRIFT
         # =========================================================
         st.subheader("📊 KS Drift")
 
@@ -1622,11 +1633,9 @@ if run_update:
                 cols
             )
 
-            if drift_df.empty:
-                continue
-
-            drift_df["market"] = nome
-            drift_results.append(drift_df)
+            if not drift_df.empty:
+                drift_df["market"] = nome
+                drift_results.append(drift_df)
 
         if drift_results:
 
@@ -1646,57 +1655,42 @@ if run_update:
             st.warning("⚠️ Drift non calcolabile")
 
         # =========================================================
-        # 🔎 PREVIEW DB AGGIORNATO
+        # ✅ PREVIEW AGGIORNATO
         # =========================================================
-        dfs_mi = dfs_new  # update runtime
-
         st.subheader("📦 Preview DB aggiornato")
 
         mkt_preview = st.selectbox(
-            "Seleziona mercato aggiornato",
+            "Mercato aggiornato",
             list(dfs_mi.keys()),
             key="preview_updated_mi"
         )
 
-        df_preview = dfs_mi[mkt_preview].copy()
+        df_preview = dfs_mi[mkt_preview]
 
-        # ✅ info utili
-        rows_added = len(df_preview) - len(dfs_old.get(mkt_preview, []))
+        st.write("Ultima data:", df_preview.index.max())
+        st.write("Shape:", df_preview.shape)
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Righe totali", len(df_preview))
-        col2.metric("Ultima data", str(df_preview.index.max()))
-        col3.metric("Nuove righe", rows_added)
-
-        # ✅ debug colonne
-        with st.expander("🔎 Colonne dataset"):
-            st.write(df_preview.columns.tolist())
-
-        # ✅ preview dati
-        st.dataframe(
-            df_preview.tail(50),
-            use_container_width=True
-        )
+        st.dataframe(df_preview.tail(50), use_container_width=True)
 
     except Exception:
         st.error("❌ Errore update + KS")
         st.code(traceback.format_exc())
-    
+
+
 # =========================================================
-# ✅ BOTTONE 2: FORECAST + MONITORING (per ciascun mercato MI)
+# ✅ FORECAST
 # =========================================================
 if run_forecast:
-
-    if not dfs_mi:
-        st.error("❌ Nessun dataset MI")
-        st.stop()
 
     try:
         st.subheader("📈 Forecast")
 
+        # ✅ usa SEMPRE session_state aggiornato
+        dfs_mi = st.session_state["dfs_mi"]
+
         terna = TernaClient(
-            client_id=st.secrets["TERNA_CLIENT_ID"],
-            client_secret=st.secrets["TERNA_CLIENT_SECRET"]
+            st.secrets["TERNA_CLIENT_ID"],
+            st.secrets["TERNA_CLIENT_SECRET"]
         )
 
         meteo = MeteoDownloader()
@@ -1717,14 +1711,6 @@ if run_forecast:
             freq=MI_FREQ,
             lookback_days=MI_LOOKBACK_DAYS
         )
-
-        if df_errors is not None and not df_errors.empty:
-            st.error("❌ Errori modelli")
-            st.dataframe(df_errors)
-
-        if df_long is None or df_long.empty:
-            st.error("❌ Forecast vuoto")
-            st.stop()
 
         st.success("✅ Forecast completato")
         st.dataframe(df_long.tail(100))
@@ -1818,7 +1804,7 @@ if run_forecast:
             st.success("✅ Modello stabile")
 
         st.success("✅ Pipeline completata")
-
+  
     except Exception:
-        st.error("❌ Errore forecast/monitoring")
+        st.error("❌ Errore forecast")
         st.code(traceback.format_exc())
