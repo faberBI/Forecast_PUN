@@ -11,6 +11,7 @@ st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
                    
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
+from functions.forecast_mi import forecast_next_96_all_mi_models_dropbox
 from functions.create_datasets import EntsoeDownloader
 import yaml
 import dropbox
