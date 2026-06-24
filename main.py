@@ -1353,6 +1353,15 @@ def pipeline_run_mi():
         # =========================
         LOOKBACK_DAYS = 8
         lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
+        
+        def normalize(x):
+          return (
+          str(x)
+          .lower()
+          .replace("_", "")
+          .replace(" ", "")
+          .replace("(", "")
+          .replace(")", ""))
 
         # =========================
         # MATCH COLONNA EXCEL
@@ -1360,7 +1369,7 @@ def pipeline_run_mi():
         col_name = None
 
         for c in df_excel.columns:
-            if nome.replace("_", " ").lower() in str(c).lower():
+            if normalize(nome).lower() in normalize(c):
                 col_name = c
                 break
 
@@ -1581,10 +1590,6 @@ with st.expander("📚 Preview dataset"):
     mkt = st.selectbox("Mercato", list(dfs_mi.keys()), key="preview_mi")
 
     df_sel = dfs_mi[mkt]
-
-    st.write("📅 Ultima data:", df_sel.index.max())
-    st.write("📦 Shape:", df_sel.shape)
-
     st.dataframe(df_sel.tail(50), use_container_width=True)
 
 
