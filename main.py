@@ -1384,6 +1384,7 @@ def pipeline_run_mi():
         # =========================
         # CONCAT STORICO + NUOVI
         # =========================
+        log(f"{nome} columns: {df_historical.columns.tolist()}")
         df_hist = df_historical.reset_index()[["Datetime", "target"]]
 
         df_full = pd.concat([df_hist, df_new_y])
@@ -1484,7 +1485,7 @@ def pipeline_run_mi():
         # =========================
         # SOLO NUOVE
         # =========================
-        df_new = df_new[df_new["Datetime"] > last_date]
+        df_new = df_new[df_new["Datetime"] >=last_date]
 
         # =========================
         # FINAL
