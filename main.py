@@ -1596,7 +1596,9 @@ if run_update:
         st.success("✅ DB aggiornato")
         st.code("\n".join(logs))
 
-        # ===== KS DRIFT =====
+        # =========================================================
+        # 📊 KS DRIFT
+        # =========================================================
         st.subheader("📊 KS Drift")
 
         drift_results = []
@@ -1643,14 +1645,43 @@ if run_update:
         else:
             st.warning("⚠️ Drift non calcolabile")
 
-        # aggiorna runtime
-        dfs_mi = dfs_new
+        # =========================================================
+        # 🔎 PREVIEW DB AGGIORNATO
+        # =========================================================
+        dfs_mi = dfs_new  # update runtime
+
+        st.subheader("📦 Preview DB aggiornato")
+
+        mkt_preview = st.selectbox(
+            "Seleziona mercato aggiornato",
+            list(dfs_mi.keys()),
+            key="preview_updated_mi"
+        )
+
+        df_preview = dfs_mi[mkt_preview].copy()
+
+        # ✅ info utili
+        rows_added = len(df_preview) - len(dfs_old.get(mkt_preview, []))
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Righe totali", len(df_preview))
+        col2.metric("Ultima data", str(df_preview.index.max()))
+        col3.metric("Nuove righe", rows_added)
+
+        # ✅ debug colonne
+        with st.expander("🔎 Colonne dataset"):
+            st.write(df_preview.columns.tolist())
+
+        # ✅ preview dati
+        st.dataframe(
+            df_preview.tail(50),
+            use_container_width=True
+        )
 
     except Exception:
         st.error("❌ Errore update + KS")
         st.code(traceback.format_exc())
-
-
+    
 # =========================================================
 # ✅ BOTTONE 2: FORECAST + MONITORING (per ciascun mercato MI)
 # =========================================================
