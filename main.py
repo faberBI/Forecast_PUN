@@ -1763,7 +1763,6 @@ if st.session_state["forecast_done"]:
             st.stop()
 
         st.success("✅ Forecast disponibile")
-        st.dataframe(df_long.tail(100), use_container_width=True)
 
         # =================================================
         # ✅ MONITORING
