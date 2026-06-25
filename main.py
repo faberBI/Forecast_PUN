@@ -1594,10 +1594,6 @@ with st.expander("📚 Preview dataset"):
 
 
 # =========================================================
-# BUTTONS
-# =========================================================
-
-# =========================================================
 # ✅ INIT STATE
 # =========================================================
 if "forecast_done" not in st.session_state:
@@ -1803,10 +1799,10 @@ if st.session_state["forecast_done"]:
                 continue
 
             nome_df = make_market_key(col)
-
+            st.info(nome_df)
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
             st.write(df_pred)
-            st.wife(df_real[col])
+            st.write(df_real[col])
             if df_pred.empty:
                 continue
 
