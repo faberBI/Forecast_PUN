@@ -569,15 +569,19 @@ def forecast_next_96_single_mi_model_from_dropbox(
     # =========================
     # ✅ TERNA
     # =========================
-    if terna is not None:
-        terna_df = prepare_terna(
-            terna,
-            (last_dt - pd.Timedelta(days=lookback_days)).strftime("%d/%m/%Y"),
-            future_index[-1].strftime("%d/%m/%Y")
-        )
-        terna_df = shift_terna_only(terna_df)
 
-        exog_future = exog_future.merge(
+    if terna is not None:
+        try:
+            terna_df = prepare_terna(terna,(last_dt - pd.Timedelta(days=lookback_days)).strftime("%d/%m/%Y"), future_index[-1].strftime("%d/%m/%Y"))
+            terna_df = shift_terna_only(terna_df)
+        except Exception as e:
+            print(f"⚠️ Terna failed: {e}")
+            terna_df = pd.DataFrame(index=df_hist.index)
+    else:
+        terna_df = pd.DataFrame(index=df_hist.index)
+
+
+    exog_future = exog_future.merge(
             terna_df,
             on="Datetime",
             how="left"
