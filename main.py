@@ -1603,6 +1603,10 @@ with st.expander("📚 Preview dataset"):
 if "forecast_done" not in st.session_state:
     st.session_state["forecast_done"] = False
 
+
+# =========================================================
+# ✅ BUTTONS
+# =========================================================
 col1, col2 = st.columns(2)
 
 run_update = col1.button("🧱 Update DB + KS Drift", use_container_width=True)
@@ -1613,7 +1617,14 @@ WINDOW = 96 * 7
 
 
 # =========================================================
-# ✅ UPDATE DB + KS
+# ✅ TRIGGER FORECAST
+# =========================================================
+if run_forecast:
+    st.session_state["forecast_done"] = True
+
+
+# =========================================================
+# ✅ UPDATE DB + KS + PREVIEW
 # =========================================================
 if run_update:
 
@@ -1625,19 +1636,14 @@ if run_update:
         with st.spinner("Aggiornamento DB MI..."):
             dfs_new, logs = pipeline_run_mi()
 
-        # ✅ REFRESH CACHE
         st.cache_data.clear()
 
-        # ✅ UPDATE STATE
         st.session_state["dfs_mi"] = dfs_new
-        dfs_mi = dfs_new
 
         st.success("✅ DB aggiornato")
         st.code("\n".join(logs))
 
-        # =======================
-        # DEBUG UPDATE 🔥
-        # =======================
+        # ✅ SUMMARY
         st.subheader("📊 Update summary")
 
         for nome in dfs_new:
@@ -1645,9 +1651,7 @@ if run_update:
             new_len = len(dfs_new[nome])
             st.write(f"{nome} → +{new_len - old_len} righe")
 
-        # =========================================================
-        # KS DRIFT
-        # =========================================================
+        # ✅ KS DRIFT
         st.subheader("📊 KS Drift")
 
         drift_results = []
@@ -1676,7 +1680,6 @@ if run_update:
                 drift_results.append(drift_df)
 
         if drift_results:
-
             drift_all = pd.concat(drift_results)
             st.dataframe(drift_all)
 
@@ -1692,21 +1695,21 @@ if run_update:
         else:
             st.warning("⚠️ Drift non calcolabile")
 
-        # =========================================================
-        # ✅ PREVIEW AGGIORNATO
-        # =========================================================
-        st.subheader("📦 Preview DB aggiornato")
+        # ✅ PREVIEW DATASET
+        st.subheader("📦 Preview dataset aggiornato")
+
+        dfs_mi = st.session_state["dfs_mi"]
 
         mkt_preview = st.selectbox(
-            "Mercato aggiornato",
+            "Mercato",
             list(dfs_mi.keys()),
             key="preview_updated_mi"
         )
 
         df_preview = dfs_mi[mkt_preview]
 
-        st.write("Ultima data:", df_preview.index.max())
-        st.write("Shape:", df_preview.shape)
+        st.write("📅 Ultima data:", df_preview.index.max())
+        st.write("📦 Shape:", df_preview.shape)
 
         st.dataframe(df_preview.tail(50), use_container_width=True)
 
@@ -1716,14 +1719,14 @@ if run_update:
 
 
 # =========================================================
-# ✅ FORECAST EXECUTION (NON RERUN)
+# ✅ FORECAST + MONITORING
 # =========================================================
 if st.session_state["forecast_done"]:
 
     try:
         st.subheader("📈 Forecast")
 
-        # ✅ se NON esiste, lo calcola
+        # ✅ CALCOLA UNA VOLTA SOLA
         if "forecast_long" not in st.session_state:
 
             dfs_mi = st.session_state["dfs_mi"]
@@ -1739,7 +1742,7 @@ if st.session_state["forecast_done"]:
 
             meteo = MeteoDownloader()
 
-            df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
+            df_long, _, _ = forecast_next_96_all_mi_models_dropbox(
                 dfs=dfs_mi,
                 dropbox_token=DROPBOX_TOKEN,
                 dropbox_results_json_path=MI_RESULTS_JSON_PATH,
@@ -1760,13 +1763,11 @@ if st.session_state["forecast_done"]:
 
         df_long = st.session_state["forecast_long"]
 
-        st.success("✅ Forecast disponibile")
-
         if df_long.empty:
             st.warning("⚠️ Forecast vuoto")
             st.stop()
 
-        # ✅ preview
+        st.success("✅ Forecast disponibile")
         st.dataframe(df_long.tail(100), use_container_width=True)
 
         # =================================================
@@ -1784,9 +1785,6 @@ if st.session_state["forecast_done"]:
             st.info("⬆️ Carica Excel per vedere il monitoring")
             st.stop()
 
-        # -------------------------
-        # PREPARA REAL
-        # -------------------------
         df_real = pd.read_excel(uploaded_file)
 
         df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
@@ -1798,9 +1796,6 @@ if st.session_state["forecast_done"]:
         df_forecast = df_long.copy()
         df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
 
-        # -------------------------
-        # MATCH
-        # -------------------------
         all_eval = []
 
         for col in df_real.columns:
@@ -1837,9 +1832,7 @@ if st.session_state["forecast_done"]:
 
         df_eval = pd.concat(all_eval)
 
-        # =================================================
         # ✅ METRICHE
-        # =================================================
         df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
         df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
 
@@ -1849,11 +1842,11 @@ if st.session_state["forecast_done"]:
 
         st.line_chart(df_eval[["mae", "rmse"]].dropna())
 
-        # 🔥 errore per ora
+        # ✅ errore per ora
         err_hour = df_eval.groupby(df_eval["Datetime"].dt.hour)["abs_error"].mean()
         st.line_chart(err_hour)
 
-        # 🔥 drift
+        # ✅ drift
         mape = df_eval["error_abs_perc"].mean() * 100
 
         if mape > 25:
@@ -1863,7 +1856,7 @@ if st.session_state["forecast_done"]:
         else:
             st.success("✅ Modello stabile")
 
-        # ✅ reset opzionale
+        # ✅ RESET
         if st.button("🧹 Reset Forecast"):
             st.session_state["forecast_done"] = False
             st.session_state.pop("forecast_long", None)
