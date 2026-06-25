@@ -237,6 +237,60 @@ def load_mi_model_payload_from_dropbox(
     return payload, model_dropbox_path
 
 
+
+
+def prepare_terna(terna, start, end):
+    def clean(df):
+        return terna.clean_terna_df(df)
+
+    load = clean(terna.get_total_load(start, end))
+    market = clean(terna.get_market_load(start, end))
+
+    wind = clean(terna.get_generation(start, end, "Wind")).rename(
+        columns={"actual_generation_MW": "wind_generation_MW"}
+    )
+    solar = clean(terna.get_generation(start, end, "Photovoltaic")).rename(
+        columns={"actual_generation_MW": "solar_generation_MW"}
+    )
+    hydro = clean(terna.get_generation(start, end, "Hydro")).rename(
+        columns={"actual_generation_MW": "hydro_generation_MW"}
+    )
+
+    df = load.merge(market, on="date", how="outer")
+    df = terna.safe_merge(df, wind, "wind")
+    df = terna.safe_merge(df, solar, "solar")
+    df = terna.safe_merge(df, hydro, "hydro")
+
+    df = terna.clean_terna_features(df)
+
+    numeric_cols = [
+        "total_load_MW",
+        "market_load_MW",
+        "forecast_total_load_MW",
+        "forecast_market_load_MW",
+        "actual_generation_GWh",
+        "actual_generation_GWh_solar",
+        "actual_generation_GWh_hydro",
+        "load_ramp_1h",
+    ]
+
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["Datetime"] = pd.to_datetime(df["date"])
+
+    # hourly -> 15min
+    df = (
+        df.set_index("Datetime")
+          .sort_index()
+          .resample("15min")
+          .ffill()
+          .reset_index()
+    )
+
+    return df
+
 # ==========================================================
 # BUILD EXOG FUTURE - STILE PUN
 # ==========================================================
