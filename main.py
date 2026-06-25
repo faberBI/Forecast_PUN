@@ -1802,8 +1802,6 @@ if st.session_state["forecast_done"]:
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
             df_real_sel = df_real[['Datetime', col]]
             df_pred_sel = df_pred[['Datetime','pred']]
-            st.write(df_real_sel)
-            st.write(df_pred_sel)
             if df_pred_sel.empty:
                 continue
 
@@ -1812,7 +1810,7 @@ if st.session_state["forecast_done"]:
                 on="Datetime",
                 how="inner"
             )
-            st.write(df_tmp) 
+
             if df_tmp.empty:
                 continue
             df_tmp = df_tmp.rename(columns={col: "real"})
@@ -1830,37 +1828,62 @@ if st.session_state["forecast_done"]:
             st.stop()
 
         df_eval = pd.concat(all_eval)
+        # =========================================================
+        # ✅ SELECT MODEL
+        # =========================================================
+        st.subheader("🎯 Selezione modello")
 
-        # ✅ METRICHE
-        df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
-        df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
+        models = sorted(df_eval["nome_df"].unique())
+
+        selected_model = st.selectbox(
+            "Seleziona mercato",
+            models
+        )
+
+        df_model = df_eval[df_eval["nome_df"] == selected_model]
+
+        if df_model.empty:
+            st.warning("⚠️ Nessun dato per il modello selezionato")
+            st.stop()
+
+        # =========================================================
+        # ✅ METRICHE (SOLO MODELLO)
+        # =========================================================
+        df_model = df_model.sort_values("Datetime").copy()
+
+        df_model["mae"] = df_model["abs_error"].rolling(96).mean()
+        df_model["rmse"] = (df_model["abs_error"] ** 2).rolling(96).mean() ** 0.5
 
         c1, c2 = st.columns(2)
-        c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
-        c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
+        c1.metric("MAE", round(df_model["mae"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_model["rmse"].iloc[-1], 2))
 
-        st.line_chart(df_eval[["mae", "rmse"]].dropna())
+        st.line_chart(df_model.set_index("Datetime")[["mae", "rmse"]].dropna())
 
-        # ✅ errore per ora
-        err_hour = df_eval.groupby(df_eval["Datetime"].dt.hour)["abs_error"].mean()
+        # =========================================================
+        # ✅ REAL vs PRED
+        # =========================================================
+        st.subheader("📊 Reale vs Predetto")
+
+        plot_df = df_model.set_index("Datetime")[["real", "pred"]].tail(300)
+        st.line_chart(plot_df)
+
+        # =========================================================
+        # ✅ ERRORE PER ORA
+        # =========================================================
+        st.subheader("⏱️ Errore per ora")
+
+        err_hour = df_model.groupby(df_model["Datetime"].dt.hour)["abs_error"].mean()
         st.line_chart(err_hour)
 
-        # ✅ drift
-        mape = df_eval["error_abs_perc"].mean() * 100
+        # =========================================================
+        # ✅ DRIFT
+        # =========================================================
+        mape = df_model["error_abs_perc"].mean() * 100
 
         if mape > 25:
-            st.error("🚨 Drift forte")
+            st.error(f"🚨 Drift forte ({round(mape,2)}%)")
         elif mape > 18:
-            st.warning("⚠️ Drift moderato")
+            st.warning(f"⚠️ Drift moderato ({round(mape,2)}%)")
         else:
-            st.success("✅ Modello stabile")
-
-        # ✅ RESET
-        if st.button("🧹 Reset Forecast"):
-            st.session_state["forecast_done"] = False
-            st.session_state.pop("forecast_long", None)
-
-    except Exception:
-        st.error("❌ Errore forecast")
-        st.code(traceback.format_exc())
-
+            st.success(f"✅ Modello stabile ({round(mape,2)}%)")
