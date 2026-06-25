@@ -669,7 +669,6 @@ def forecast_next_96_all_mi_models_dropbox(
                         steps=steps,
                         freq=freq,
                         lookback_days=lookback_days,
-                        use_commodities=use_commodities,
                         terna=terna,
                         terna_zone=terna_zone,
                         terna_shift_steps=terna_shift_steps
