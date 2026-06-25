@@ -291,6 +291,26 @@ def prepare_terna(terna, start, end):
 
     return df
 
+def shift_terna_only(df: pd.DataFrame, shift_steps: int = 1) -> pd.DataFrame:
+    """
+    Shifta SOLO le feature Terna per evitare leakage.
+    """
+    df = df.copy()
+
+    terna_cols = [
+        "forecast_total_load_MW",
+        "actual_generation_GWh",
+        "actual_generation_GWh_solar",
+        "actual_generation_GWh_hydro",
+        "load_ramp_1h",
+        "load_forecast_error",
+    ]
+
+    cols_to_shift = [c for c in terna_cols if c in df.columns]
+    df[cols_to_shift] = df[cols_to_shift].shift(shift_steps)
+
+    return df
+    
 # ==========================================================
 # BUILD EXOG FUTURE - STILE PUN
 # ==========================================================
