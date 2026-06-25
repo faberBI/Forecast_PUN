@@ -62,20 +62,42 @@ DROPBOX_MODEL_DIR = os.environ.get(
 MODEL_DIR = Path(os.environ.get("LOCAL_MODEL_DIR", "models"))
 
 BEST_PARAMS = {
-    "lambda_l1": 0,
-    "lambda_l2": 0,
-    "learning_rate": 0.03,
-    "max_depth": 7,
-    "n_estimators": 300,
-    "num_leaves": 31,
-    "subsample": 0.9,
-    "verbose": -1,
-    "verbosity": -1,
-    "random_state": RANDOM_STATE,
-}
+            "learning_rate": 0.03561019439085495,
+            "num_leaves": 22,
+            "max_depth": 8,
+            "n_estimators": 533,
+            "subsample": 0.6849356442713105,
+            "colsample_bytree": 0.6727299868828402,
+            "lambda_l1": 0.9170225492671691,
+            "lambda_l2": 6.0848448591907545,
+            "min_child_samples": 47
+        }
 
 BEST_LAGS = list(range(1, 97))
-BEST_SELECTED_EXOG = None  # None = tutte le colonne eccetto PUN
+BEST_SELECTED_EXOG = [
+                     "minute",
+                    "lag_2d",
+                    "lag_7d",
+                    "pun_ret_1h",
+                    "pun_ret_1d",
+                    "pun_ret_7d",
+                    "momentum_4h",
+                    "momentum_1d",
+                    "bologna_temperature_2m",
+                    "bari_wind_speed_80m",
+                    "cloud_cover_mean",
+                    "forecast_total_load_MW",
+                    "actual_generation_GWh_hydro",
+                    "load_ramp_1h",
+                    "load_forecast_error",
+                    "CALA_B16",
+                    "CNOR_B16",
+                    "CSUD_B16",
+                    "NORD_B16",
+                    "SARD_B16",
+                    "SICI_B16",
+                    "SUD_B16"
+        ]  
 
 RECENCY_MIN_WEIGHT = 0.5
 RECENCY_MAX_WEIGHT = 1.5
@@ -85,7 +107,9 @@ EVENING_WINDOW_EXTRA = 1.50
 MIDDAY_QOD = set(range(48, 69))
 EVENING_QOD = set(range(76, 87))
 
-
+def weight_func(index: pd.DatetimeIndex) -> np.ndarray:
+    return np.ones(len(index))
+   
 def ensure_datetime_freq(obj, freq: str = DATA_FREQ, fill: bool = True):
     out = obj.copy()
     if not isinstance(out.index, pd.DatetimeIndex):
