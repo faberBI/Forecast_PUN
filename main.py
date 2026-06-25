@@ -1799,9 +1799,7 @@ if st.session_state["forecast_done"]:
                 continue
 
             nome_df = make_market_key(col)
-            st.info(nome_df)
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
-            st.write(df_pred)
             st.write(df_real[col])
             if df_pred.empty:
                 continue
