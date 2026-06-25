@@ -1718,8 +1718,7 @@ if run_update:
 # ✅ FORECAST + MONITORING
 # =========================================================
 if st.session_state["forecast_done"]:
-
-    try:
+  try:
         st.subheader("📈 Forecast")
 
         # ✅ CALCOLA UNA VOLTA SOLA
@@ -1887,3 +1886,7 @@ if st.session_state["forecast_done"]:
             st.warning(f"⚠️ Drift moderato ({round(mape,2)}%)")
         else:
             st.success(f"✅ Modello stabile ({round(mape,2)}%)")
+  except Exception:
+        st.error("❌ Errore forecast")
+        import traceback
+        st.code(traceback.format_exc())
