@@ -1800,7 +1800,8 @@ if st.session_state["forecast_done"]:
 
             nome_df = make_market_key(col)
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
-            st.write(df_real[col])
+            df_real_sel = df_real[['Datetime', col]]
+            st.write(df_pred)
             if df_pred.empty:
                 continue
 
