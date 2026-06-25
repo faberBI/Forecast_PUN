@@ -1597,10 +1597,17 @@ with st.expander("📚 Preview dataset"):
 # BUTTONS
 # =========================================================
 
+# =========================================================
+# ✅ INIT STATE
+# =========================================================
+if "forecast_done" not in st.session_state:
+    st.session_state["forecast_done"] = False
+
 col1, col2 = st.columns(2)
 
 run_update = col1.button("🧱 Update DB + KS Drift", use_container_width=True)
 run_forecast = col2.button("📈 Forecast + Monitoring", use_container_width=True)
+
 
 WINDOW = 96 * 7
 
@@ -1707,54 +1714,59 @@ if run_update:
         st.error("❌ Errore update + KS")
         st.code(traceback.format_exc())
 
+
 # =========================================================
-# ✅ FORECAST + MONITORING
+# ✅ FORECAST EXECUTION (NON RERUN)
 # =========================================================
-if run_forecast:
+if st.session_state["forecast_done"]:
 
     try:
         st.subheader("📈 Forecast")
 
-        dfs_mi = st.session_state["dfs_mi"]
+        # ✅ se NON esiste, lo calcola
+        if "forecast_long" not in st.session_state:
 
-        try:
-            terna = TernaClient(
-                st.secrets["TERNA_CLIENT_ID"],
-                st.secrets["TERNA_CLIENT_SECRET"]
+            dfs_mi = st.session_state["dfs_mi"]
+
+            try:
+                terna = TernaClient(
+                    st.secrets["TERNA_CLIENT_ID"],
+                    st.secrets["TERNA_CLIENT_SECRET"]
+                )
+            except Exception as e:
+                print(f"⚠️ Terna disabilitato: {e}")
+                terna = None
+
+            meteo = MeteoDownloader()
+
+            df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
+                dfs=dfs_mi,
+                dropbox_token=DROPBOX_TOKEN,
+                dropbox_results_json_path=MI_RESULTS_JSON_PATH,
+                dropbox_models_dir=MI_MODELS_DIR,
+                dropbox_forecasts_dir=MI_FORECASTS_DIR,
+                forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
+                forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
+                errors_path=MI_FORECAST_ERRORS_PATH,
+                meteo=meteo,
+                locations=LOCATIONS,
+                terna=terna,
+                steps=MI_STEPS,
+                freq=MI_FREQ,
+                lookback_days=MI_LOOKBACK_DAYS
             )
-        except Exception as e:
-            print(f"⚠️ Terna disabilitato: {e}")
-            terna = None
 
-        meteo = MeteoDownloader()
+            st.session_state["forecast_long"] = df_long
 
-        df_long, df_wide, df_errors = forecast_next_96_all_mi_models_dropbox(
-            dfs=dfs_mi,
-            dropbox_token=DROPBOX_TOKEN,
-            dropbox_results_json_path=MI_RESULTS_JSON_PATH,
-            dropbox_models_dir=MI_MODELS_DIR,
-            dropbox_forecasts_dir=MI_FORECASTS_DIR,
-            forecast_history_long_path=MI_FORECAST_HISTORY_LONG,
-            forecast_history_wide_path=MI_FORECAST_HISTORY_WIDE,
-            errors_path=MI_FORECAST_ERRORS_PATH,
-            meteo=meteo,
-            locations=LOCATIONS,
-            terna=terna,
-            steps=MI_STEPS,
-            freq=MI_FREQ,
-            lookback_days=MI_LOOKBACK_DAYS
-        )
+        df_long = st.session_state["forecast_long"]
 
-        # ✅ salva forecast
-        st.session_state["forecast_long"] = df_long
-
-        st.success("✅ Forecast completato")
+        st.success("✅ Forecast disponibile")
 
         if df_long.empty:
             st.warning("⚠️ Forecast vuoto")
             st.stop()
 
-        # 📊 preview
+        # ✅ preview
         st.dataframe(df_long.tail(100), use_container_width=True)
 
         # =================================================
@@ -1769,7 +1781,7 @@ if run_forecast:
         )
 
         if uploaded_file is None:
-            st.info("⬆️ Carica Excel per completare il monitoring")
+            st.info("⬆️ Carica Excel per vedere il monitoring")
             st.stop()
 
         # -------------------------
@@ -1825,9 +1837,9 @@ if run_forecast:
 
         df_eval = pd.concat(all_eval)
 
-        # -------------------------
-        # METRICHE
-        # -------------------------
+        # =================================================
+        # ✅ METRICHE
+        # =================================================
         df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
         df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
 
@@ -1851,8 +1863,12 @@ if run_forecast:
         else:
             st.success("✅ Modello stabile")
 
-        st.success("✅ Pipeline completata")
+        # ✅ reset opzionale
+        if st.button("🧹 Reset Forecast"):
+            st.session_state["forecast_done"] = False
+            st.session_state.pop("forecast_long", None)
 
     except Exception:
         st.error("❌ Errore forecast")
         st.code(traceback.format_exc())
+
