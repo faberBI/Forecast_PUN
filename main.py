@@ -1801,12 +1801,13 @@ if st.session_state["forecast_done"]:
             nome_df = make_market_key(col)
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
             df_real_sel = df_real[['Datetime', col]]
-            st.write(df_pred)
-            if df_pred.empty:
+            df_pred_sel = df_pred[['Datetime',pred]]
+          
+            if df_pred_sel.empty:
                 continue
 
-            df_tmp = df_pred.merge(
-                df_real[["Datetime", col]],
+            df_tmp = df_pred_sel.merge(
+                df_real_sel,
                 on="Datetime",
                 how="inner"
             )
