@@ -1816,6 +1816,7 @@ if st.session_state["forecast_done"]:
             df_tmp["nome_df"] = nome_df
             df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
+            st.write(df_tmp)
 
             all_eval.append(df_tmp)
 
