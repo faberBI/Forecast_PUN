@@ -1364,18 +1364,8 @@ def pipeline_run_mi():
         # =========================
         # LOOKBACK
         # =========================
-        LOOKBACK_DAYS = 8
-        lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
         
-        def normalize(x):
-          return (
-          str(x)
-          .lower()
-          .replace("_", "")
-          .replace(" ", "")
-          .replace("(", "")
-          .replace(")", ""))
-
+        lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
         col_name = MARKET_TO_EXCEL.get(nome)
 
         if col_name is None or col_name not in df_excel.columns:
@@ -1501,7 +1491,10 @@ def pipeline_run_mi():
         # =========================
         # SOLO NUOVE
         # =========================
-        df_new = df_new[df_new["Datetime"] >=last_date]
+        df_new = df_new[df_new["Datetime"] > last_date] 
+        if df_new.empty:
+          log(f"{nome} → NESSUN UPDATE ❌ (df_new vuoto)")
+          continue
 
         # =========================
         # FINAL
