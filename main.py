@@ -1707,8 +1707,6 @@ if run_update:
         st.error("❌ Errore update + KS")
         st.code(traceback.format_exc())
 
-st.subheader("📈 Forecast")
-
 # =========================================================
 # ✅ FORECAST + MONITORING
 # =========================================================
