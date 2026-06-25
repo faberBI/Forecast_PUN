@@ -524,13 +524,12 @@ def forecast_next_96_single_mi_model_from_dropbox(
     steps=96,
     freq="15min",
     lookback_days=10,
-    terna_shift_steps=1
 ):
 
     payload, model_dropbox_path = load_mi_model_payload_from_dropbox(
-        dropbox_token=dropbox_token,
-        model_path_from_json=model_path_from_json,
-        dropbox_models_dir=dropbox_models_dir
+        dropbox_token,
+        model_path_from_json,
+        dropbox_models_dir
     )
 
     forecaster = payload["forecaster"]
@@ -539,14 +538,11 @@ def forecast_next_96_single_mi_model_from_dropbox(
     if target is None:
         target = payload["target"]
 
-    if nome_df is None:
-        nome_df = payload.get("nome_df", None)
-
     df = normalize_hist_df(df_hist)
 
     y = pd.to_numeric(df[target], errors="coerce").dropna()
 
-    last_window = y.iloc[-forecaster.window_size:].copy()
+    last_window = y.iloc[-forecaster.window_size:]
     last_dt = y.index[-1]
 
     future_index = pd.date_range(
@@ -555,9 +551,9 @@ def forecast_next_96_single_mi_model_from_dropbox(
         freq=freq
     )
 
-    # =========================
-    # BUILD EXOG FUTURE BASE
-    # =========================
+    # ======================================================
+    # BASE EXOG
+    # ======================================================
     exog_future = build_mi_exog_future_pun_style(
         df_hist=df,
         target_col=target,
@@ -566,73 +562,80 @@ def forecast_next_96_single_mi_model_from_dropbox(
         meteo_downloader=meteo,
         locations=locations
     )
-    
-    if "Datetime" not in exog_future.columns:
-        exog_future = exog_future.copy()
-        exog_future["Datetime"] = exog_future.index
 
-    # =========================
-    # ✅ TERNA
-    # =========================
+    # ✅ INDEX CONSISTENTE
+    exog_future.index = pd.to_datetime(exog_future.index)
 
+    # ======================================================
+    # ✅ TERNA (JOIN FIX)
+    # ======================================================
     if terna is not None:
         try:
-            terna_df = prepare_terna(terna,(last_dt - pd.Timedelta(days=lookback_days)).strftime("%d/%m/%Y"), future_index[-1].strftime("%d/%m/%Y"))
+            terna_df = prepare_terna(
+                terna,
+                (last_dt - pd.Timedelta(days=lookback_days)).strftime("%d/%m/%Y"),
+                future_index[-1].strftime("%d/%m/%Y")
+            )
+
             terna_df = shift_terna_only(terna_df)
+
+            if "Datetime" in terna_df.columns:
+                terna_df["Datetime"] = pd.to_datetime(terna_df["Datetime"])
+                terna_df = terna_df.set_index("Datetime")
+
+            terna_df.index = pd.to_datetime(terna_df.index)
+
+            exog_future = exog_future.join(terna_df, how="left")
+
         except Exception as e:
-            print(f"⚠️ Terna failed: {e}")
-            terna_df = pd.DataFrame(index=df_hist.index)
-    else:
-        terna_df = pd.DataFrame(index=df_hist.index)
+            print(f"⚠️ TERNA skipped: {e}")
 
-
-    exog_future = exog_future.merge(
-            terna_df,
-            on="Datetime",
-            how="left"
+    # ======================================================
+    # ✅ ENTSOE (JOIN FIX)
+    # ======================================================
+    try:
+        entsoe = EntsoeDownloader(
+            token=st.secrets["ENTSOE_TOKEN"],
+            zones=[
+                ("NORD", "10Y1001A1001A73I"),
+                ("CNOR", "10Y1001A1001A70O"),
+                ("CSUD", "10Y1001A1001A71M"),
+                ("SUD",  "10Y1001A1001A788"),
+                ("SARD", "10Y1001A1001A74G"),
+                ("SICI", "10Y1001A1001A75E"),
+                ("CALA", "10Y1001C--00096J")
+            ],
+            start_date=future_index[0].to_pydatetime(),
+            end_date=future_index[-1].to_pydatetime()
         )
 
-    # =========================
-    # ✅ ENTSOE (FIX CRITICO)
-    # =========================
-    ZONES = [
-        ("NORD", "10Y1001A1001A73I"),
-        ("CNOR", "10Y1001A1001A70O"),
-        ("CSUD", "10Y1001A1001A71M"),
-        ("SUD",  "10Y1001A1001A788"),
-        ("SARD", "10Y1001A1001A74G"),
-        ("SICI", "10Y1001A1001A75E"),
-        ("CALA", "10Y1001C--00096J")
-    ]
+        entsoe_feat = entsoe.build_features()
 
-    entsoe = EntsoeDownloader(
-        token=st.secrets["ENTSOE_TOKEN"],
-        zones=ZONES,
-        start_date=future_index[0].to_pydatetime(),
-        end_date=future_index[-1].to_pydatetime()
+        entsoe_feat.index = pd.to_datetime(entsoe_feat.index)
+
+        exog_future = exog_future.join(entsoe_feat, how="left")
+
+    except Exception as e:
+        print(f"⚠️ ENTSOE skipped: {e}")
+
+    # ======================================================
+    # ✅ FINAL CLEAN
+    # ======================================================
+    exog_future = (
+        exog_future
+        .replace([np.inf, -np.inf], np.nan)
+        .ffill()
+        .bfill()
+        .fillna(0)
     )
 
-    entsoe_feat = entsoe.build_features()
-
-    entsoe_feat["Datetime"] = pd.to_datetime(entsoe_feat["Timestamp"])
-    entsoe_feat = entsoe_feat.drop(columns=["Timestamp"])
-
-    # 👉 merge ENTSOE
-    exog_future = exog_future.merge(
-        entsoe_feat,
-        on="Datetime",
-        how="left"
-    )
-
-    exog_future = exog_future.ffill()
-
-    # =========================
-    # PREDICT
-    # =========================
+    # ======================================================
+    # ✅ PREDICT
+    # ======================================================
     preds = forecaster.predict(
         steps=steps,
         last_window=last_window,
-        exog=exog_future
+        exog=exog_future[selected_exog]
     )
 
     preds = pd.Series(preds, index=future_index)
@@ -647,6 +650,7 @@ def forecast_next_96_single_mi_model_from_dropbox(
     })
 
     return forecast_df, exog_future, exog_future.copy()
+
 
 
 # ==========================================================
