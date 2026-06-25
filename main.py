@@ -953,14 +953,27 @@ if uploaded_file is not None:
             # ==============================================#
             # 6. SAVE ERROR HISTORY
             # ==============================================#
-
-            if os.path.exists(ERROR_PATH):
-              df_old = pd.read_parquet(ERROR_PATH)
+            # =====================================================
+            # ✅ READ DA DROPBOX (SOURCE OF TRUTH)
+            # =====================================================
+            try:
+              df_old = load_from_dropbox("/forecast_pun/error_history.parquet",st.secrets["DROPBOX_TOKEN"])
               df_all = pd.concat([df_old, df_eval], ignore_index=True)
-            else:
+
+            except Exception:
+              # ✅ primo run (file non esiste ancora)
               df_all = df_eval.copy()
-            
+            # =====================================================
+            # ✅ CLEAN + APPEND SICURO
+            # =====================================================
             df_all = df_all.sort_values(["Datetime", "created_at"])
+
+            # ✅ evita duplicati (stesso timestamp)
+            df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
+
+            # =====================================================
+            # ✅ SAVE LOCALE + DROPBOX
+            # =====================================================
             df_all.to_parquet(ERROR_PATH)
             upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet", st.secrets["DROPBOX_TOKEN"])
 
