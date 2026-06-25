@@ -565,6 +565,10 @@ def forecast_next_96_single_mi_model_from_dropbox(
         meteo_downloader=meteo,
         locations=locations
     )
+    
+    if "Datetime" not in exog_future.columns:
+        exog_future = exog_future.copy()
+        exog_future["Datetime"] = exog_future.index
 
     # =========================
     # ✅ TERNA
