@@ -1326,6 +1326,19 @@ def pipeline_run_mi():
 
     updated_dfs = {}
 
+  
+    MARKET_TO_EXCEL = {
+      "italia_senza_vincoli": "Italia (senza vincoli)",
+      "calabria": "Calabria",
+      "centro_nord": "Centro Nord",
+      "centro_sud": "Centro Sud",
+      "nord": "Nord",
+      "sardegna": "Sardegna",
+      "sicilia": "Sicilia",
+      "sud": "Sud",
+      "italia_coupling": "Italia  Coupling"  # ⚠️ doppio spazio!
+    }
+
     # =========================
     # LOOP MERCATI
     # =========================
@@ -1363,19 +1376,13 @@ def pipeline_run_mi():
           .replace("(", "")
           .replace(")", ""))
 
-        # =========================
-        # MATCH COLONNA EXCEL
-        # =========================
-        col_name = None
+        col_name = MARKET_TO_EXCEL.get(nome)
 
-        for c in df_excel.columns:
-            if normalize(nome).lower() in normalize(c):
-                col_name = c
-                break
+        if col_name is None or col_name not in df_excel.columns:
+          log(f"❌ Colonna NON trovata per {nome} → {col_name}")
+          continue
 
-        if col_name is None:
-            log(f"⚠️ colonna non trovata per {nome}")
-            continue
+        log(f"✅ {nome} → match Excel: {col_name}")
 
         # =========================
         # TARGET (Y)
