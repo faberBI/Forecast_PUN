@@ -1818,7 +1818,7 @@ if st.session_state["forecast_done"]:
 
             if df_tmp.empty:
                 continue
-
+            st.write(df_tmp)
             df_tmp = df_tmp.rename(columns={col: "real"})
             
             df_tmp["real"] = pd.to_numeric(df_tmp["real"], errors="coerce")
