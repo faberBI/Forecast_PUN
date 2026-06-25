@@ -1802,7 +1802,8 @@ if st.session_state["forecast_done"]:
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
             df_real_sel = df_real[['Datetime', col]]
             df_pred_sel = df_pred[['Datetime','pred']]
-          
+            st.write(df_real_sel)
+            st.write(df_pred_sel)
             if df_pred_sel.empty:
                 continue
 
@@ -1811,7 +1812,7 @@ if st.session_state["forecast_done"]:
                 on="Datetime",
                 how="inner"
             )
-
+            st.write(df_tmp) 
             if df_tmp.empty:
                 continue
             df_tmp = df_tmp.rename(columns={col: "real"})
