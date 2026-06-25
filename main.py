@@ -1808,6 +1808,7 @@ if st.session_state["forecast_done"]:
                 on="Datetime",
                 how="inner"
             )
+            st.write(df_tmp)
 
             if df_tmp.empty:
                 continue
