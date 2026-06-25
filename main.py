@@ -1799,7 +1799,7 @@ if st.session_state["forecast_done"]:
         all_eval = []
 
         for col in df_real.columns:
-
+            st.info(col)
             if col in ["Data", "Ora", "Periodo", "Datetime", "Italia"]:
                 continue
 
