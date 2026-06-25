@@ -1820,6 +1820,9 @@ if st.session_state["forecast_done"]:
                 continue
 
             df_tmp = df_tmp.rename(columns={col: "real"})
+            
+            df_tmp["real"] = pd.to_numeric(df_tmp["real"], errors="coerce")
+            df_tmp["pred"] = pd.to_numeric(df_tmp["pred"], errors="coerce")
 
             df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
