@@ -1365,7 +1365,7 @@ def pipeline_run_mi():
         # LOOKBACK
         # =========================
         
-        lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=LOOKBACK_DAYS)
+        lookback_start_dt = last_date.floor("D") - pd.Timedelta(days=MI_LOOKBACK_DAYS)
         col_name = MARKET_TO_EXCEL.get(nome)
 
         if col_name is None or col_name not in df_excel.columns:
