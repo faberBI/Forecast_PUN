@@ -524,6 +524,7 @@ def forecast_next_96_single_mi_model_from_dropbox(
     steps=96,
     freq="15min",
     lookback_days=10,
+    terna_shift_steps=1
 ):
 
     payload, model_dropbox_path = load_mi_model_payload_from_dropbox(
@@ -563,11 +564,10 @@ def forecast_next_96_single_mi_model_from_dropbox(
         locations=locations
     )
 
-    # ✅ INDEX CONSISTENTE
     exog_future.index = pd.to_datetime(exog_future.index)
 
     # ======================================================
-    # ✅ TERNA (JOIN FIX)
+    # ✅ TERNA (COERENTE + SHIFT MANTENUTO)
     # ======================================================
     if terna is not None:
         try:
@@ -577,7 +577,8 @@ def forecast_next_96_single_mi_model_from_dropbox(
                 future_index[-1].strftime("%d/%m/%Y")
             )
 
-            terna_df = shift_terna_only(terna_df)
+            # ✅ MANTIENE LA TUA LOGICA
+            terna_df = shift_terna_only(terna_df, shift_steps=terna_shift_steps)
 
             if "Datetime" in terna_df.columns:
                 terna_df["Datetime"] = pd.to_datetime(terna_df["Datetime"])
@@ -591,7 +592,7 @@ def forecast_next_96_single_mi_model_from_dropbox(
             print(f"⚠️ TERNA skipped: {e}")
 
     # ======================================================
-    # ✅ ENTSOE (JOIN FIX)
+    # ✅ ENTSOE
     # ======================================================
     try:
         entsoe = EntsoeDownloader(
@@ -619,7 +620,7 @@ def forecast_next_96_single_mi_model_from_dropbox(
         print(f"⚠️ ENTSOE skipped: {e}")
 
     # ======================================================
-    # ✅ FINAL CLEAN
+    # ✅ CLEAN
     # ======================================================
     exog_future = (
         exog_future
