@@ -1803,7 +1803,6 @@ if st.session_state["forecast_done"]:
             df_pred_sel = df_pred[['Datetime','pred']]
             if df_pred_sel.empty:
                 continue
-            st.write(df_real_sel)
             df_tmp = df_pred_sel.merge(
                 df_real_sel,
                 on="Datetime",
@@ -1812,9 +1811,9 @@ if st.session_state["forecast_done"]:
 
             if df_tmp.empty:
                 continue
-            st.write(df_tmp)
+            
             df_tmp["real"] = pd.to_numeric(df_tmp["real"], errors="coerce")
-            df_tmp["pred"] = pd.to_numeric(df_tmp["pred"], errors="coerce")
+            df_tmp["pred"] = pd.to_numeric(df_tmp[col], errors="coerce")
             df_tmp["nome_df"] = nome_df
             df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
             df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
