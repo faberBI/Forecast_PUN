@@ -1596,6 +1596,7 @@ with st.expander("📚 Preview dataset"):
 # =========================================================
 # BUTTONS
 # =========================================================
+
 col1, col2 = st.columns(2)
 
 run_update = col1.button("🧱 Update DB + KS Drift", use_container_width=True)
@@ -1709,12 +1710,13 @@ if run_update:
 st.subheader("📈 Forecast")
 
 # =========================================================
-# ✅ RUN FORECAST (BUTTON → NON RERUN AUTOMATICO)
+# ✅ FORECAST + MONITORING
 # =========================================================
-
-if st.button("🚀 Run Forecast"):
+if run_forecast:
 
     try:
+        st.subheader("📈 Forecast")
+
         dfs_mi = st.session_state["dfs_mi"]
 
         try:
@@ -1745,126 +1747,114 @@ if st.button("🚀 Run Forecast"):
             lookback_days=MI_LOOKBACK_DAYS
         )
 
-        # ✅ SALVA IN SESSION
+        # ✅ salva forecast
         st.session_state["forecast_long"] = df_long
-        st.session_state["forecast_wide"] = df_wide
-        st.session_state["forecast_errors"] = df_errors
 
         st.success("✅ Forecast completato")
+
+        if df_long.empty:
+            st.warning("⚠️ Forecast vuoto")
+            st.stop()
+
+        # 📊 preview
+        st.dataframe(df_long.tail(100), use_container_width=True)
+
+        # =================================================
+        # ✅ MONITORING
+        # =================================================
+        st.subheader("📉 Monitoring")
+
+        uploaded_file = st.file_uploader(
+            "Carica Excel MI reali",
+            type=["xlsx"],
+            key="monitoring_file"
+        )
+
+        if uploaded_file is None:
+            st.info("⬆️ Carica Excel per completare il monitoring")
+            st.stop()
+
+        # -------------------------
+        # PREPARA REAL
+        # -------------------------
+        df_real = pd.read_excel(uploaded_file)
+
+        df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
+        df_real["Datetime"] = (
+            df_real["Data"]
+            + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
+        )
+
+        df_forecast = df_long.copy()
+        df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
+
+        # -------------------------
+        # MATCH
+        # -------------------------
+        all_eval = []
+
+        for col in df_real.columns:
+
+            if col in ["Data", "Ora", "Periodo", "Datetime", "Italia"]:
+                continue
+
+            nome_df = make_market_key(col)
+
+            df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
+
+            if df_pred.empty:
+                continue
+
+            df_tmp = df_pred.merge(
+                df_real[["Datetime", col]],
+                on="Datetime",
+                how="inner"
+            )
+
+            if df_tmp.empty:
+                continue
+
+            df_tmp = df_tmp.rename(columns={col: "real"})
+
+            df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
+            df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
+
+            all_eval.append(df_tmp)
+
+        if not all_eval:
+            st.warning("⚠️ Nessun match forecast vs real")
+            st.stop()
+
+        df_eval = pd.concat(all_eval)
+
+        # -------------------------
+        # METRICHE
+        # -------------------------
+        df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
+        df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
+
+        c1, c2 = st.columns(2)
+        c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
+        c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
+
+        st.line_chart(df_eval[["mae", "rmse"]].dropna())
+
+        # 🔥 errore per ora
+        err_hour = df_eval.groupby(df_eval["Datetime"].dt.hour)["abs_error"].mean()
+        st.line_chart(err_hour)
+
+        # 🔥 drift
+        mape = df_eval["error_abs_perc"].mean() * 100
+
+        if mape > 25:
+            st.error("🚨 Drift forte")
+        elif mape > 18:
+            st.warning("⚠️ Drift moderato")
+        else:
+            st.success("✅ Modello stabile")
+
+        st.success("✅ Pipeline completata")
 
     except Exception:
         st.error("❌ Errore forecast")
         st.code(traceback.format_exc())
-
-
-# =========================================================
-# ✅ SHOW FORECAST (NON RICALCOLA)
-# =========================================================
-
-if "forecast_long" in st.session_state:
-
-    df_long = st.session_state["forecast_long"]
-
-    if not df_long.empty:
-        st.dataframe(df_long.tail(100), use_container_width=True)
-    else:
-        st.warning("⚠️ Forecast vuoto")
-
-
-# =========================================================
-# ✅ MONITORING (INDIPENDENTE)
-# =========================================================
-
-st.subheader("📉 Monitoring")
-
-uploaded_file = st.file_uploader("Carica Excel MI reali", type=["xlsx"])
-
-if uploaded_file is None:
-    st.info("⬆️ Carica il file Excel con i prezzi reali")
-    st.stop()
-
-
-if "forecast_long" not in st.session_state:
-    st.warning("⚠️ Devi prima eseguire il forecast")
-    st.stop()
-
-
-# =========================================================
-# ✅ PREPARA DATI
-# =========================================================
-
-df_real = pd.read_excel(uploaded_file)
-
-df_real["Data"] = pd.to_datetime(df_real["Data"], dayfirst=True)
-df_real["Datetime"] = (
-    df_real["Data"]
-    + pd.to_timedelta((df_real["Periodo"] - 1) * 15, unit="m")
-)
-
-df_forecast = st.session_state["forecast_long"].copy()
-
-df_forecast["Datetime"] = pd.to_datetime(df_forecast["Datetime"])
-
-# =========================================================
-# ✅ MATCH FORECAST VS REAL
-# =========================================================
-
-all_eval = []
-
-for col in df_real.columns:
-
-    if col in ["Data", "Ora", "Periodo", "Datetime", "Italia"]:
-        continue
-
-    nome_df = make_market_key(col)
-
-    df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
-
-    if df_pred.empty:
-        continue
-
-    df_tmp = df_pred.merge(
-        df_real[["Datetime", col]],
-        on="Datetime",
-        how="inner"
-    )
-
-    if df_tmp.empty:
-        continue
-
-    df_tmp = df_tmp.rename(columns={col: "real"})
-
-    df_tmp["abs_error"] = (df_tmp["real"] - df_tmp["pred"]).abs()
-    df_tmp["error_abs_perc"] = df_tmp["abs_error"] / (df_tmp["real"] + 1e-6)
-
-    all_eval.append(df_tmp)
-
-if not all_eval:
-    st.warning("⚠️ Nessun match forecast vs real")
-    st.stop()
-
-df_eval = pd.concat(all_eval)
-
-# =========================================================
-# ✅ METRICHE
-# =========================================================
-
-df_eval["mae"] = df_eval["abs_error"].rolling(96).mean()
-df_eval["rmse"] = (df_eval["abs_error"] ** 2).rolling(96).mean() ** 0.5
-
-c1, c2 = st.columns(2)
-c1.metric("MAE", round(df_eval["mae"].iloc[-1], 2))
-c2.metric("RMSE", round(df_eval["rmse"].iloc[-1], 2))
-
-st.line_chart(df_eval[["mae", "rmse"]].dropna())
-
-mape = df_eval["error_abs_perc"].mean() * 100
-
-if mape > 25:
-    st.error("🚨 Drift forte")
-elif mape > 18:
-    st.warning("⚠️ Drift moderato")
-else:
-    st.success("✅ Modello stabile")
-
-st.success("✅ Monitoring completato")
