@@ -789,22 +789,9 @@ def forecast_next_96_all_mi_models_dropbox(
                     )
 
             except Exception as e:
-
-                msg = str(e)
-
-                print(f"❌ Errore forecast {nome_df} / {target}: {msg}")
-
-                errors.append({
-                    "nome_df": nome_df,
-                    "target": target,
-                    "model_path_from_json": model_path_from_json,
-                    "error": msg
-                })
-
-                if not skip_errors:
-                    raise
-
-                continue
+                msg = f"{nome_df} / {target} -> {str(e)}"
+                print("💣 ERRORE REALE:", msg)
+                raise RuntimeError(msg)
 
     if len(all_forecasts) == 0:
 
