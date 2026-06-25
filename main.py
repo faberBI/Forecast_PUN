@@ -1799,14 +1799,14 @@ if st.session_state["forecast_done"]:
         all_eval = []
 
         for col in df_real.columns:
-            st.info(col)
             if col in ["Data", "Ora", "Periodo", "Datetime", "Italia"]:
                 continue
 
             nome_df = make_market_key(col)
 
             df_pred = df_forecast[df_forecast["nome_df"] == nome_df]
-
+            st.write(df_pred)
+            st.wife(df_real[col])
             if df_pred.empty:
                 continue
 
@@ -1818,7 +1818,6 @@ if st.session_state["forecast_done"]:
 
             if df_tmp.empty:
                 continue
-            st.write(df_tmp)
             df_tmp = df_tmp.rename(columns={col: "real"})
             
             df_tmp["real"] = pd.to_numeric(df_tmp["real"], errors="coerce")
