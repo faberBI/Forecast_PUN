@@ -1717,11 +1717,15 @@ if run_forecast:
 
         # ✅ usa SEMPRE session_state aggiornato
         dfs_mi = st.session_state["dfs_mi"]
+      
+        try:
+          terna = TernaClient(
+          st.secrets["TERNA_CLIENT_ID"],
+          st.secrets["TERNA_CLIENT_SECRET"])
+        except Exception as e:
+          print(f"⚠️ Terna disabilitato: {e}")
+          terna = None
 
-        terna = TernaClient(
-            st.secrets["TERNA_CLIENT_ID"],
-            st.secrets["TERNA_CLIENT_SECRET"]
-        )
 
         meteo = MeteoDownloader()
 
