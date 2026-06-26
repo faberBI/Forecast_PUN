@@ -770,6 +770,12 @@ def compute_sample_weights(index: pd.DatetimeIndex) -> np.ndarray:
     return weights
 
 
+def get_sample_weight(y):
+    w = np.ones(len(y))
+    thr = np.nanquantile(y, 0.9)
+    w[y > thr] = 5.0
+    return w
+
 def weight_func(index: pd.DatetimeIndex) -> np.ndarray:
     """
     Firma richiesta da skforecast: ForecasterDirect chiama questa funzione
