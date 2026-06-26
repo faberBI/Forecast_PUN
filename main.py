@@ -961,7 +961,7 @@ if uploaded_file is not None:
 
             #except Exception:
             # ✅ primo run (file non esiste ancora)
-              df_all = df_eval.copy()
+            df_all = df_eval.copy()
             # =====================================================
             # ✅ CLEAN + APPEND SICURO
             # =====================================================
