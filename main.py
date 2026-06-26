@@ -939,6 +939,7 @@ if uploaded_file is not None:
                 on="Datetime",
                 how="inner"
             )
+        st.write(df_eval)
         if df_eval.empty:
           st.warning("⚠️ Nessun matching tra forecast e dati reali")
         
