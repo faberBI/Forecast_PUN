@@ -939,7 +939,7 @@ if uploaded_file is not None:
                 on="Datetime",
                 how="inner"
             )
-        st.write(df_eval)
+
         if df_eval.empty:
           st.warning("⚠️ Nessun matching tra forecast e dati reali")
         
@@ -951,18 +951,16 @@ if uploaded_file is not None:
             df_eval["error"] = df_eval["PUN"] - df_eval["pred"]
             df_eval["abs_error"] = df_eval["error"].abs()
             df_eval["created_at"] = run_ts
-            # ==============================================#
-            # 6. SAVE ERROR HISTORY
-            # ==============================================#
+
             # =====================================================
             # ✅ READ DA DROPBOX (SOURCE OF TRUTH)
             # =====================================================
-            try:
-              df_old = load_from_dropbox("/forecast_pun/error_history.parquet",st.secrets["DROPBOX_TOKEN"])
-              df_all = pd.concat([df_old, df_eval], ignore_index=True)
+            #try:
+              #df_old = load_from_dropbox("/forecast_pun/error_history.parquet",st.secrets["DROPBOX_TOKEN"])
+              #df_all = pd.concat([df_old, df_eval], ignore_index=True)
 
-            except Exception:
-              # ✅ primo run (file non esiste ancora)
+            #except Exception:
+            # ✅ primo run (file non esiste ancora)
               df_all = df_eval.copy()
             # =====================================================
             # ✅ CLEAN + APPEND SICURO
