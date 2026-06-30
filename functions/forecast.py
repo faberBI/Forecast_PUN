@@ -150,7 +150,7 @@ def forecast_day_ahead_96_base(
         "Datetime": future_index,
         "pred": preds.values
     })
-    return out
+    return out, last_window, exog_future
 
 def pun_to_datetime(df):
 
