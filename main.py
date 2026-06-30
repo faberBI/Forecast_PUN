@@ -13,6 +13,12 @@ from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, T
 from functions.forecast import (forecast_day_ahead_96_base, pun_to_datetime, plot_forecast_pun)
 from functions.forecast_mi import forecast_next_96_all_mi_models_dropbox
 from functions.create_datasets import EntsoeDownloader
+from functions.explain import (
+    build_forecast_explainability_df,
+    summarize_importance,
+    plot_importance_bar,
+)
+
 import yaml
 import dropbox
 
@@ -811,8 +817,6 @@ try:
 except:
     st.warning("⚠️ Dataset non disponibile su Dropbox")
     st.stop()
-    
-run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
 FORECAST_PATH = "dati_output/forecast_history.parquet"
 
@@ -835,6 +839,255 @@ if run_forecast:
     preds_view = preds.copy()
     st.subheader("📊 Preview Forecast")
     st.dataframe(preds_view.tail(50), use_container_width=True)
+    # =========================================================
+    # 🔎 EXPLAINABILITY FORECAST OUT-OF-SAMPLE NEXT 96
+    # =========================================================
+
+    st.divider()
+    st.header("🔎 Spiegabilità forecast out-of-sample next 96")
+
+    try:
+        explain_df = build_forecast_explainability_df(
+            forecaster=model_base,
+            selected_exog=selected_exog,
+            preds=preds,
+            steps=96,
+        )
+
+        if explain_df.empty:
+            st.warning(
+                "⚠️ Non riesco a estrarre la spiegabilità dal modello caricato. "
+                "Il modello potrebbe non esporre feature_importances_, coef_ o get_feature_importances()."
+            )
+
+        else:
+            st.caption(
+                "Questa spiegabilità è calcolata sui 96 valori forecast appena generati. "
+                "Ogni quarto d'ora usa il relativo modello step-wise del ForecasterDirect."
+            )
+
+            c1, c2 = st.columns([1, 1])
+
+            with c1:
+                explain_view = st.selectbox(
+                    "Vista spiegabilità",
+                    [
+                        "Media forecast next 96",
+                        "Per ora forecast",
+                        "Per 15 minuti forecast",
+                    ],
+                    index=0,
+                    key="explain_view_forecast",
+                )
+
+            with c2:
+                top_n_explain = st.slider(
+                    "Numero feature da mostrare",
+                    min_value=5,
+                    max_value=50,
+                    value=25,
+                    step=5,
+                    key="top_n_explain_forecast",
+                )
+
+            # =====================================================
+            # 1. MEDIA FORECAST NEXT 96
+            # =====================================================
+            if explain_view == "Media forecast next 96":
+
+                summary = summarize_importance(
+                    explain_df,
+                    top_n=top_n_explain,
+                )
+
+                st.subheader("🌍 Feature che guidano mediamente il forecast next 96")
+
+                fig = plot_importance_bar(
+                    summary,
+                    title="Top feature medie sul forecast out-of-sample next 96",
+                )
+
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    summary.rename(
+                        columns={
+                            "feature": "Feature",
+                            "importance_mean": "Importanza media normalizzata",
+                            "importance_pct": "Importanza %",
+                        }
+                    ),
+                    use_container_width=True,
+                )
+
+            # =====================================================
+            # 2. PER ORA FORECAST
+            # =====================================================
+            elif explain_view == "Per ora forecast":
+
+                hour_options = (
+                    explain_df[["hour"]]
+                    .drop_duplicates()
+                    .sort_values("hour")["hour"]
+                    .astype(int)
+                    .tolist()
+                )
+
+                selected_hour = st.selectbox(
+                    "Seleziona ora forecast",
+                    hour_options,
+                    format_func=lambda h: f"{h:02d}:00 - {h:02d}:45",
+                    key="selected_hour_explain_forecast",
+                )
+
+                hour_df = explain_df[
+                    explain_df["hour"] == selected_hour
+                ].copy()
+
+                summary = summarize_importance(
+                    hour_df,
+                    top_n=top_n_explain,
+                )
+
+                st.subheader(
+                    f"🕐 Feature che guidano il forecast nell'ora {selected_hour:02d}:00 - {selected_hour:02d}:45"
+                )
+
+                fig = plot_importance_bar(
+                    summary,
+                    title=f"Top feature forecast ora {selected_hour:02d}",
+                )
+
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    summary.rename(
+                        columns={
+                            "feature": "Feature",
+                            "importance_mean": "Importanza media normalizzata",
+                            "importance_pct": "Importanza %",
+                        }
+                    ),
+                    use_container_width=True,
+                )
+
+            # =====================================================
+            # 3. PER 15 MINUTI FORECAST
+            # =====================================================
+            elif explain_view == "Per 15 minuti forecast":
+
+                slot_options_df = (
+                    explain_df[["Datetime", "step", "slot_15m"]]
+                    .drop_duplicates()
+                    .sort_values("Datetime")
+                    .reset_index(drop=True)
+                )
+
+                slot_labels = (
+                    slot_options_df["Datetime"].dt.strftime("%Y-%m-%d %H:%M")
+                    + " | step "
+                    + slot_options_df["step"].astype(str)
+                ).tolist()
+
+                selected_slot_label = st.selectbox(
+                    "Seleziona quarto d'ora forecast",
+                    slot_labels,
+                    index=0,
+                    key="selected_slot_explain_forecast",
+                )
+
+                selected_idx = slot_labels.index(selected_slot_label)
+
+                selected_dt = slot_options_df.loc[selected_idx, "Datetime"]
+                selected_step = int(slot_options_df.loc[selected_idx, "step"])
+
+                slot_df = explain_df[
+                    explain_df["Datetime"] == selected_dt
+                ].copy()
+
+                summary = summarize_importance(
+                    slot_df,
+                    top_n=top_n_explain,
+                )
+
+                st.subheader(
+                    f"⏱️ Feature che guidano il forecast per {selected_dt} | step {selected_step}"
+                )
+
+                fig = plot_importance_bar(
+                    summary,
+                    title=f"Top feature forecast {selected_dt}",
+                )
+
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    summary.rename(
+                        columns={
+                            "feature": "Feature",
+                            "importance_mean": "Importanza normalizzata",
+                            "importance_pct": "Importanza %",
+                        }
+                    ),
+                    use_container_width=True,
+                )
+
+            # =====================================================
+            # HEATMAP FEATURE x ORA SUL NEXT 96
+            # =====================================================
+            st.divider()
+            st.subheader("🔥 Heatmap feature importance per ora forecast")
+
+            top_global_features = (
+                summarize_importance(explain_df, top_n=15)["feature"]
+                .tolist()
+            )
+
+            heat_df = (
+                explain_df[explain_df["feature"].isin(top_global_features)]
+                .groupby(["hour", "feature"], as_index=False)["importance_norm"]
+                .mean()
+            )
+
+            heat_df["importance_pct"] = heat_df["importance_norm"] * 100
+
+            fig_heat = px.density_heatmap(
+                heat_df,
+                x="hour",
+                y="feature",
+                z="importance_pct",
+                color_continuous_scale="Blues",
+                title="Importanza media per ora sul forecast next 96",
+                labels={
+                    "hour": "Ora forecast",
+                    "feature": "Feature",
+                    "importance_pct": "Importanza %",
+                },
+            )
+
+            fig_heat.update_layout(
+                height=550,
+                xaxis=dict(dtick=1),
+                margin=dict(l=20, r=20, t=60, b=20),
+            )
+
+            st.plotly_chart(fig_heat, use_container_width=True)
+
+            with st.expander("📄 Tabella completa spiegabilità next 96"):
+                st.dataframe(
+                    explain_df.sort_values(
+                        ["Datetime", "importance_norm"],
+                        ascending=[True, False],
+                    ),
+                    use_container_width=True,
+                )
+
+    except Exception as e:
+        st.error(f"❌ Errore nella spiegabilità forecast: {type(e).__name__}: {e}")
+        st.code(traceback.format_exc(), language="python")
 
     # ==========================================
     # SAVE FORECAST (parquet)
