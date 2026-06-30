@@ -829,269 +829,418 @@ FORECAST_PATH = "dati_output/forecast_history.parquet"
 
 
 # =========================================================
+# SESSION STATE FORECAST / SHAP
+# =========================================================
+if "pun_preds" not in st.session_state:
+    st.session_state["pun_preds"] = None
+
+if "pun_explain_df" not in st.session_state:
+    st.session_state["pun_explain_df"] = None
+
+if "pun_last_window_used" not in st.session_state:
+    st.session_state["pun_last_window_used"] = None
+
+if "pun_exog_used" not in st.session_state:
+    st.session_state["pun_exog_used"] = None
+
+if "pun_forecast_done" not in st.session_state:
+    st.session_state["pun_forecast_done"] = False
+
+# =========================================================
 # FORECAST BUTTON
 # =========================================================
-run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
+run_forecast = st.button(
+    "📈 Esegui Forecast Day Ahead",
+    use_container_width=True
+)
 
 if run_forecast:
-    preds, last_window_used, exog_used = forecast_day_ahead_96_base(
-        df_hist=df_hist,
-        best_forecaster=model_base,
-        meteo_downloader=MeteoDownloader(),
-        locations=LOCATIONS,
-        selected_exog=selected_exog,
-        steps=96
-    )
-
-    st.success("✅ Forecast completato")
-
-    # ==========================================
-    # ✅ FIX TIMEZONE SOLO PER DISPLAY
-    # ==========================================
-    preds_view = preds.copy()
-    st.subheader("📊 Preview Forecast")
-    st.dataframe(preds_view.tail(50), use_container_width=True)
-
-    # =========================================================
-    # 🔎 EXPLAINABILITY (SHAP) FORECAST OUT-OF-SAMPLE NEXT 96
-    # =========================================================
-    st.divider()
-    st.header("🔎 Spiegabilità forecast out-of-sample next 96")
 
     try:
-        if exog_used is None or last_window_used is None:
-          st.warning("⚠️ Input mancanti per SHAP.")
-        else:
-            with st.spinner("⏳ Calcolo SHAP sui 96 step..."):
-                explain_df = build_forecast_explainability_shap_df(
-                    forecaster=model_base,
-                    last_window=last_window_used,
-                    exog=exog_used,
+
+        with st.spinner("📈 Calcolo forecast next 96..."):
+
+            preds, last_window_used, exog_used = (
+                forecast_day_ahead_96_base(
+                    df_hist=df_hist,
+                    best_forecaster=model_base,
+                    meteo_downloader=MeteoDownloader(),
+                    locations=LOCATIONS,
+                    selected_exog=selected_exog,
                     steps=96,
                 )
+            )
 
-            if explain_df.empty:
-                st.warning("⚠️ Nessun valore SHAP calcolato.")
-            else:
-                st.caption(
-                    "Valori SHAP firmati: positivo = la feature spinge il PUN "
-                    "verso l'alto in quel quarto d'ora, negativo = lo spinge "
-                    "verso il basso."
+        st.session_state["pun_preds"] = preds.copy()
+        st.session_state["pun_last_window_used"] = last_window_used
+        st.session_state["pun_exog_used"] = exog_used
+        st.session_state["pun_forecast_done"] = True
+
+        st.success("✅ Forecast completato")
+
+        # =====================================================
+        # SHAP CALCOLATO UNA SOLA VOLTA
+        # =====================================================
+        explain_df = None
+
+        if (
+            exog_used is not None
+            and last_window_used is not None
+        ):
+
+            with st.spinner("⏳ Calcolo SHAP next 96..."):
+
+                explain_df = (
+                    build_forecast_explainability_shap_df(
+                        forecaster=model_base,
+                        last_window=last_window_used,
+                        exog=exog_used,
+                        steps=96,
+                    )
                 )
 
-                c1, c2 = st.columns([1, 1])
+        st.session_state["pun_explain_df"] = explain_df
 
-                with c1:
-                    explain_view = st.selectbox(
-                        "Vista spiegabilità",
-                        [
-                            "Media forecast next 96",
-                            "Per ora forecast",
-                            "Per 15 minuti forecast",
-                        ],
-                        index=0,
-                        key="explain_view_shap",
-                    )
+        # =====================================================
+        # SAVE FORECAST
+        # =====================================================
+        preds_to_save = preds.copy()
+        preds_to_save["created_at"] = pd.Timestamp.now()
 
-                with c2:
-                    top_n_explain = st.slider(
-                        "Numero feature da mostrare",
-                        min_value=5,
-                        max_value=50,
-                        value=25,
-                        step=5,
-                        key="top_n_explain_shap",
-                    )
+        if os.path.exists(FORECAST_PATH):
 
-                # =====================================================
-                # 1. MEDIA FORECAST NEXT 96
-                # =====================================================
-                if explain_view == "Media forecast next 96":
-                    summary = summarize_signed_importance(explain_df, top_n=top_n_explain)
+            df_old = pd.read_parquet(FORECAST_PATH)
 
-                    st.subheader("🌍 Feature che guidano mediamente il forecast next 96 (con segno)")
+            df_all = pd.concat(
+                [df_old, preds_to_save],
+                ignore_index=True
+            )
 
-                    fig = plot_signed_importance_bar(
-                        summary,
-                        title="Top feature — impatto medio firmato sul forecast out-of-sample next 96",
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+        else:
 
-                    st.dataframe(
-                        summary.rename(columns={
-                            "feature": "Feature",
-                            "shap_mean": "Impatto medio firmato",
-                            "shap_abs_mean": "Impatto medio assoluto",
-                        }),
-                        use_container_width=True,
-                    )
+            df_all = preds_to_save.copy()
 
-                # =====================================================
-                # 2. PER ORA FORECAST
-                # =====================================================
-                elif explain_view == "Per ora forecast":
-                    hour_options = (
-                        explain_df[["hour"]]
-                        .drop_duplicates()
-                        .sort_values("hour")["hour"]
-                        .astype(int)
-                        .tolist()
-                    )
+            st.info(
+                "📦 Primo forecast salvato "
+                "(inizializzazione storico)"
+            )
 
-                    selected_hour = st.selectbox(
-                        "Seleziona ora forecast",
-                        hour_options,
-                        format_func=lambda h: f"{h:02d}:00 - {h:02d}:45",
-                        key="selected_hour_explain_shap",
-                    )
+        df_all = (
+            df_all
+            .drop_duplicates(
+                subset=["Datetime"],
+                keep="last"
+            )
+            .sort_values("Datetime")
+        )
 
-                    hour_df = explain_df[explain_df["hour"] == selected_hour].copy()
-                    summary = summarize_signed_importance(hour_df, top_n=top_n_explain)
+        df_all.to_parquet(FORECAST_PATH)
 
-                    st.subheader(
-                        f"🕐 Feature che guidano il forecast nell'ora "
-                        f"{selected_hour:02d}:00 - {selected_hour:02d}:45 (con segno)"
-                    )
+        upload_to_dropbox(
+            FORECAST_PATH,
+            "/forecast_pun/forecast_history.parquet",
+            st.secrets["DROPBOX_TOKEN"]
+        )
 
-                    fig = plot_signed_importance_bar(
-                        summary,
-                        title=f"Top feature forecast ora {selected_hour:02d}",
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+        st.success("✅ Salvato su Dropbox")
+        st.success(
+            f"✅ Salvati {len(preds_to_save)} nuovi forecast"
+        )
 
-                    st.dataframe(
-                        summary.rename(columns={
-                            "feature": "Feature",
-                            "shap_mean": "Impatto medio firmato",
-                            "shap_abs_mean": "Impatto medio assoluto",
-                        }),
-                        use_container_width=True,
-                    )
-
-                # =====================================================
-                # 3. PER 15 MINUTI FORECAST
-                # =====================================================
-                elif explain_view == "Per 15 minuti forecast":
-                    slot_options_df = (
-                        explain_df[["Datetime", "step"]]
-                        .drop_duplicates()
-                        .sort_values("Datetime")
-                        .reset_index(drop=True)
-                    )
-
-                    slot_labels = (
-                        slot_options_df["Datetime"].dt.strftime("%Y-%m-%d %H:%M")
-                        + " | step "
-                        + slot_options_df["step"].astype(str)
-                    ).tolist()
-
-                    selected_slot_label = st.selectbox(
-                        "Seleziona quarto d'ora forecast",
-                        slot_labels,
-                        index=0,
-                        key="selected_slot_explain_shap",
-                    )
-
-                    selected_idx = slot_labels.index(selected_slot_label)
-                    selected_dt = slot_options_df.loc[selected_idx, "Datetime"]
-
-                    st.subheader(f"⏱️ Contributi firmati per {selected_dt}")
-
-                    fig = plot_signed_waterfall_for_step(
-                        explain_df, selected_dt, top_n=top_n_explain
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    slot_df = explain_df[explain_df["Datetime"] == selected_dt].copy()
-                    st.dataframe(
-                        slot_df[["feature", "feature_value", "shap_value"]]
-                        .sort_values("shap_value", key=lambda s: s.abs(), ascending=False)
-                        .rename(columns={
-                            "feature": "Feature",
-                            "feature_value": "Valore feature",
-                            "shap_value": "Impatto (SHAP)",
-                        }),
-                        use_container_width=True,
-                    )
-
-                # =====================================================
-                # HEATMAP FEATURE x ORA (segno)
-                # =====================================================
-                st.divider()
-                st.subheader("🔥 Heatmap impatto firmato per ora forecast")
-
-                top_global_features = (
-                    summarize_signed_importance(explain_df, top_n=15)["feature"].tolist()
-                )
-
-                fig_heat = plot_signed_heatmap(explain_df, top_global_features)
-                st.plotly_chart(fig_heat, use_container_width=True)
-
-                with st.expander("📄 Tabella completa SHAP next 96"):
-                    st.dataframe(
-                        explain_df.sort_values(
-                            ["Datetime", "shap_value"],
-                            key=lambda s: s.abs() if s.name == "shap_value" else s,
-                            ascending=[True, False],
-                        ),
-                        use_container_width=True,
-                    )
+        st.write(
+            f"📊 Totale forecast storico: {len(df_all)}"
+        )
 
     except Exception as e:
-        st.error(f"❌ Errore nella spiegabilità SHAP del forecast: {type(e).__name__}: {e}")
-        st.code(traceback.format_exc(), language="python")
-    # ==========================================
-    # SAVE FORECAST (parquet)
-    # ==========================================
-    
-    preds_to_save = preds.copy()
-    preds_to_save["created_at"] = pd.Timestamp.now()
 
-    if os.path.exists(FORECAST_PATH):
-        df_old = pd.read_parquet(FORECAST_PATH)
-        df_all = pd.concat([df_old, preds_to_save], ignore_index=True)
-    else:
-        df_all = preds_to_save.copy()
-        st.info("📦 Primo forecast salvato (inizializzazione storico)")
+        st.error(
+            f"❌ Errore forecast: "
+            f"{type(e).__name__}: {e}"
+        )
 
-    df_all = df_all.drop_duplicates(subset=["Datetime"], keep="last")
-    df_all = df_all.sort_values("Datetime")
+        st.code(
+            traceback.format_exc(),
+            language="python"
+        )
 
-    df_all.to_parquet(FORECAST_PATH)
+# =========================================================
+# RENDER PERSISTENTE FORECAST + SHAP
+# =========================================================
+if (
+    st.session_state.get("pun_forecast_done")
+    and st.session_state.get("pun_preds") is not None
+):
 
-    upload_to_dropbox(
-      FORECAST_PATH,
-      "/forecast_pun/forecast_history.parquet",
-      st.secrets["DROPBOX_TOKEN"]
-      )
+    preds = st.session_state["pun_preds"].copy()
+    explain_df = st.session_state["pun_explain_df"]
 
-    st.success("✅ Salvato su Dropbox")
+    st.divider()
 
-    # log UI
-    st.success(f"✅ Salvati {len(preds_to_save)} nuovi forecast")
-    st.write(f"📊 Totale forecast storico: {len(df_all)}")
-    # UI
+    st.subheader("📊 Preview Forecast")
+
+    st.dataframe(
+        preds.tail(50),
+        use_container_width=True
+    )
+
+    # =====================================================
+    # FORECAST PANEL
+    # =====================================================
     fig, stats = plot_forecast_pun(preds)
+
     st.subheader("📈 Forecast intraday PUN")
-    st.dataframe(preds)
-  
+
+    st.dataframe(
+        preds,
+        use_container_width=True
+    )
+
     c1, c2, c3 = st.columns(3)
+
     c1.metric("Min", stats["min"])
     c2.metric("Max", stats["max"])
     c3.metric("Mean", stats["mean"])
-    st.plotly_chart(fig, use_container_width=True)
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
 
     st.download_button(
         label="⬇️ Scarica forecast",
         data=preds.to_csv(index=False),
         file_name="forecast_day_ahead.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
+
+    # =====================================================
+    # SHAP
+    # =====================================================
+    st.divider()
+
+    st.header(
+        "🔎 Spiegabilità forecast out-of-sample next 96"
+    )
+
+    if explain_df is None or explain_df.empty:
+
+        st.warning(
+            "⚠️ Nessun valore SHAP disponibile"
+        )
+
+    else:
+
+        st.caption(
+            "Valori SHAP firmati: positivo = la "
+            "feature spinge il PUN verso l'alto, "
+            "negativo = la spinge verso il basso."
+        )
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+
+            explain_view = st.selectbox(
+                "Vista spiegabilità",
+                [
+                    "Media forecast next 96",
+                    "Per ora forecast",
+                    "Per 15 minuti forecast",
+                ],
+                key="explain_view_shap",
+            )
+
+        with col2:
+
+            top_n_explain = st.slider(
+                "Numero feature da mostrare",
+                min_value=5,
+                max_value=50,
+                value=25,
+                step=5,
+                key="top_n_explain_shap",
+            )
+
+        # =====================================================
+        # MEDIA
+        # =====================================================
+        if explain_view == "Media forecast next 96":
+
+            summary = summarize_signed_importance(
+                explain_df,
+                top_n=top_n_explain,
+            )
+
+            fig_imp = plot_signed_importance_bar(
+                summary,
+                title=(
+                    "Top feature — impatto medio firmato "
+                    "forecast next 96"
+                ),
+            )
+
+            st.plotly_chart(
+                fig_imp,
+                use_container_width=True,
+            )
+
+            st.dataframe(
+                summary,
+                use_container_width=True,
+            )
+
+        # =====================================================
+        # ORA
+        # =====================================================
+        elif explain_view == "Per ora forecast":
+
+            hour_options = (
+                explain_df["hour"]
+                .drop_duplicates()
+                .sort_values()
+                .astype(int)
+                .tolist()
+            )
+
+            selected_hour = st.selectbox(
+                "Seleziona ora forecast",
+                hour_options,
+                format_func=lambda h:
+                f"{h:02d}:00 - {h:02d}:45",
+                key="selected_hour_explain_shap",
+            )
+
+            hour_df = explain_df[
+                explain_df["hour"] == selected_hour
+            ].copy()
+
+            summary = summarize_signed_importance(
+                hour_df,
+                top_n=top_n_explain,
+            )
+
+            fig_imp = plot_signed_importance_bar(
+                summary,
+                title=f"Ora {selected_hour:02d}",
+            )
+
+            st.plotly_chart(
+                fig_imp,
+                use_container_width=True,
+            )
+
+            st.dataframe(
+                summary,
+                use_container_width=True,
+            )
+
+        # =====================================================
+        # 15 MINUTI
+        # =====================================================
+        elif explain_view == "Per 15 minuti forecast":
+
+            slot_options_df = (
+                explain_df[
+                    ["Datetime", "step"]
+                ]
+                .drop_duplicates()
+                .sort_values("Datetime")
+                .reset_index(drop=True)
+            )
+
+            slot_labels = (
+                slot_options_df["Datetime"]
+                .dt.strftime("%Y-%m-%d %H:%M")
+                + " | step "
+                + slot_options_df["step"]
+                .astype(str)
+            ).tolist()
+
+            selected_slot_label = st.selectbox(
+                "Seleziona quarto d'ora forecast",
+                slot_labels,
+                key="selected_slot_explain_shap",
+            )
+
+            selected_idx = slot_labels.index(
+                selected_slot_label
+            )
+
+            selected_dt = slot_options_df.loc[
+                selected_idx,
+                "Datetime"
+            ]
+
+            fig_step = plot_signed_waterfall_for_step(
+                explain_df,
+                selected_dt,
+                top_n=top_n_explain,
+            )
+
+            st.plotly_chart(
+                fig_step,
+                use_container_width=True,
+            )
+
+            slot_df = explain_df[
+                explain_df["Datetime"] == selected_dt
+            ].copy()
+
+            st.dataframe(
+                slot_df[
+                    [
+                        "feature",
+                        "feature_value",
+                        "shap_value",
+                    ]
+                ]
+                .sort_values(
+                    "shap_value",
+                    key=lambda s: s.abs(),
+                    ascending=False,
+                ),
+                use_container_width=True,
+            )
+
+        # =====================================================
+        # HEATMAP
+        # =====================================================
+        st.divider()
+
+        st.subheader(
+            "🔥 Heatmap impatto firmato per ora forecast"
+        )
+
+        top_features = (
+            summarize_signed_importance(
+                explain_df,
+                top_n=15,
+            )["feature"]
+            .tolist()
+        )
+
+        fig_heat = plot_signed_heatmap(
+            explain_df,
+            top_features,
+        )
+
+        st.plotly_chart(
+            fig_heat,
+            use_container_width=True,
+        )
+
+        with st.expander(
+            "📄 Tabella completa SHAP next 96"
+        ):
+
+            st.dataframe(
+                explain_df,
+                use_container_width=True,
+            )
 
 # =========================================================
 # 📉 MODEL MONITORING (Concept Drift)
 # =========================================================
-
 st.divider()
 st.header("📉 Model Monitoring (Concept Drift)")
 
