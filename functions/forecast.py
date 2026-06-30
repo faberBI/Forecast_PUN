@@ -150,6 +150,9 @@ def forecast_day_ahead_96_base(
         "Datetime": future_index,
         "pred": preds.values
     })
+    # espone gli input esatti usati per il predict, servono per SHAP
+    out.attrs["last_window_used"] = last_window
+    out.attrs["exog_used"] = exog_future
 
     return out
 
