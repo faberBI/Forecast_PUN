@@ -731,9 +731,9 @@ def load_model_artifacts_from_dropbox(force_download: bool = False):
     )
 
     if must_download:
-        today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
+        today_minus_1 = pd.Timestamp.today()
         st.info(
-            f"📥 Download modello production da Dropbox aggiornato al "
+            f"📥 Download production model aggiornato al "
             f"{today_minus_1.strftime('%d-%m-%Y')}..."
         )
 
