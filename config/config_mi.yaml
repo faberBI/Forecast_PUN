@@ -17,12 +17,12 @@ mi:
     lookback_days: 10
 
   mercati:
-    - "Italia (senza vincoli)"
-    - "Calabria"
-    - "Centro Nord"
-    - "Centro Sud"
-    - "Nord"
-    - "Sardegna"
-    - "Sicilia"
-    - "Sud"
-    - "Italia Coupling"
+    - "italia_senza_vincoli"
+    - "calabria"
+    - "centro_nord"
+    - "centro_sud"
+    - "nord"
+    - "sardegna"
+    - "sicilia"
+    - "sud"
+    - "italia_coupling"
