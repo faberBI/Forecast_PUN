@@ -834,7 +834,7 @@ FORECAST_PATH = "dati_output/forecast_history.parquet"
 run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
 
 if run_forecast:
-    preds = forecast_day_ahead_96_base(
+    preds, last_window_used, exog_used = forecast_day_ahead_96_base(
         df_hist=df_hist,
         best_forecaster=model_base,
         meteo_downloader=MeteoDownloader(),
@@ -884,12 +884,7 @@ if run_forecast:
             exog_used = _tmp.attrs.get("exog_used")
 
         if exog_used is None or last_window_used is None:
-            st.warning(
-                "⚠️ Non riesco a ricostruire gli input esatti (last_window/exog) "
-                "usati per il forecast mostrato. Verifica che "
-                "forecast_day_ahead_96_base esponga out.attrs['last_window_used'] "
-                "e out.attrs['exog_used'] come da patch."
-            )
+          st.warning("⚠️ Input mancanti per SHAP.")
         else:
             with st.spinner("⏳ Calcolo SHAP sui 96 step..."):
                 explain_df = build_forecast_explainability_shap_df(
