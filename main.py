@@ -820,8 +820,13 @@ except:
 
 FORECAST_PATH = "dati_output/forecast_history.parquet"
 
-if run_forecast:
 
+# =========================================================
+# FORECAST BUTTON
+# =========================================================
+run_forecast = st.button("📈 Esegui Forecast Day Ahead", use_container_width=True)
+
+if run_forecast:
     preds = forecast_day_ahead_96_base(
         df_hist=df_hist,
         best_forecaster=model_base,
