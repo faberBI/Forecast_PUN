@@ -859,30 +859,6 @@ if run_forecast:
     st.header("🔎 Spiegabilità forecast out-of-sample next 96")
 
     try:
-        # Recuperiamo gli input ESATTI usati per il predict mostrato (preds).
-        # 1) Tentativo "veloce": preds.attrs, valorizzati in
-        #    forecast_day_ahead_96_base subito dopo aver generato out.
-        #    NB: pandas .attrs non sopravvive sempre a concat/merge, quindi
-        #    non ci affidiamo SOLO a questo.
-        last_window_used = preds.attrs.get("last_window_used")
-        exog_used = preds.attrs.get("exog_used")
-
-        # 2) Fallback robusto: forecast_day_ahead_96_base è deterministica
-        #    (dipende solo da df_hist e dal timestamp corrente, non da numeri
-        #    casuali), quindi possiamo richiamarla di nuovo per recuperare gli
-        #    stessi identici last_window/exog, senza alterare preds già mostrato.
-        if last_window_used is None or exog_used is None:
-            _tmp = forecast_day_ahead_96_base(
-                df_hist=df_hist,
-                best_forecaster=model_base,
-                meteo_downloader=MeteoDownloader(),
-                locations=LOCATIONS,
-                selected_exog=selected_exog,
-                steps=96,
-            )
-            last_window_used = _tmp.attrs.get("last_window_used")
-            exog_used = _tmp.attrs.get("exog_used")
-
         if exog_used is None or last_window_used is None:
           st.warning("⚠️ Input mancanti per SHAP.")
         else:
