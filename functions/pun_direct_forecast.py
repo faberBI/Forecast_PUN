@@ -1,36 +1,42 @@
 # ============================================================
-# PUN DIRECT 96 FORECAST
-# LightGBM p50 + p90 + Optuna Hourly Blend Weights
+# PUN DIRECT 96 - INFERENCE v2
+# Compatibile con il training "quantile grid + festivi IT + CQR"
+# (train_direct_quantile_models -> pun_direct_lgbm_quantiles.joblib)
+# ============================================================
+#
+# Espone le 4 funzioni che app.py importa:
+#   - load_direct_artifacts(model_dir)   -> {"models_q", "metadata"}
+#   - forecast_next_96(df, model_dir)    -> DataFrame forecast day-ahead
+#   - build_native_importance_df(models_q, metadata)
+#   - summarize_native_importance(importance_df, top_n)
+#
+# Il forecaster produce, per ogni horizon:
+#   - PUN_forecast  = quantile 0.50 (mediana, punto sotto pinball loss)
+#   - PUN_q05..PUN_q95 = quantili grezzi dei singoli modelli
+#   - PUN_lower / PUN_upper = banda CALIBRATA (CQR) sulla coppia piu' larga
+#     (offset conformale additivo per ora del giorno preso dai metadata)
+#
+# ⚠️ FEATURE ENGINEERING: le funzioni add_pun_features /
+# add_time_features_from_index / _italian_holiday_flags DEVONO restare
+# IDENTICHE a quelle del training. Sono copiate verbatim qui sotto.
+# (Ideale: estrarle in functions/pun_features.py e importarle sia qui
+#  che nel training, così la sincronia e' garantita by design.)
 # ============================================================
 
 import os
 import json
-import math
-import warnings
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from lightgbm import LGBMRegressor
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    mean_absolute_error,
-    mean_squared_error,
-    mean_absolute_percentage_error,
-    r2_score,
-)
-
 try:
-    import optuna
-    HAS_OPTUNA = True
+    import holidays
+    HAS_HOLIDAYS = True
 except ImportError:
-    optuna = None
-    HAS_OPTUNA = False
-
-warnings.filterwarnings("ignore")
+    holidays = None
+    HAS_HOLIDAYS = False
 
 
 # ============================================================
@@ -41,14 +47,9 @@ TARGET_COL = "PUN"
 FREQ = "15min"
 STEPS = 96
 
-HOLDOUT_ORIGINS = 96
-
-MODEL_P50_NAME = "pun_direct_lgbm_p50.joblib"
-MODEL_P90_NAME = "pun_direct_lgbm_p90.joblib"
+MODEL_QUANTILES_NAME = "pun_direct_lgbm_quantiles.joblib"
 METADATA_NAME = "pun_direct_metadata.json"
-EVAL_NAME = "pun_direct_evaluation.csv"
 FORECAST_NAME = "pun_direct_forecast_next_96.csv"
-BLEND_WEIGHTS_NAME = "pun_direct_blend_weights.csv"
 
 FUTURE_KNOWN_EXOG = [
     "forecast_total_load_MW",
@@ -57,146 +58,69 @@ FUTURE_KNOWN_EXOG = [
     "cloud_cover_mean",
 ]
 
-BLEND_CONFIG = {
-    "method": "optuna_hourly",
-    "default_w90": 0.0,
-    "hourly_w90": {},
-    "metric": "MAE",
-    "n_trials": 80,
-    "min_samples_per_hour": 20,
-}
-
-LGBM_P50_PARAMS = {
-    "objective": "regression",
-    "n_estimators": 533,
-    "learning_rate": 0.03561019439085495,
-    "num_leaves": 22,
-    "max_depth": 5,
-    "min_child_samples": 47,
-    "subsample": 0.6849356442713105,
-    "subsample_freq": 1,
-    "colsample_bytree": 0.6727299868828402,
-    "reg_alpha": 0.9170225492671691,
-    "reg_lambda": 6.0848448591907545,
-    "random_state": 42,
-    "n_jobs": -1,
-    "verbosity": -1,
-}
-
-LGBM_P90_PARAMS = {
-    "objective": "quantile",
-    "alpha": 0.90,
-    "n_estimators": 533,
-    "learning_rate": 0.03561019439085495,
-    "num_leaves": 22,
-    "max_depth": 5,
-    "min_child_samples": 47,
-    "subsample": 0.6849356442713105,
-    "subsample_freq": 1,
-    "colsample_bytree": 0.6727299868828402,
-    "reg_alpha": 0.9170225492671691,
-    "reg_lambda": 6.0848448591907545,
-    "random_state": 42,
-    "n_jobs": -1,
-    "verbosity": -1,
-}
-
 
 # ============================================================
-# BASIC UTILS
+# BASIC UTILS  (IDENTICI AL TRAINING)
 # ============================================================
 
 def ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError("Il DataFrame deve avere un DatetimeIndex.")
-
     df = df.sort_index()
-
     if df.index.tz is not None:
         df.index = df.index.tz_convert("Europe/Rome").tz_localize(None)
-
     return df
 
 
 def infer_and_fix_freq(df: pd.DataFrame, freq: str = FREQ) -> pd.DataFrame:
     df = df.copy().sort_index()
-
-    full_index = pd.date_range(
-        start=df.index.min(),
-        end=df.index.max(),
-        freq=freq,
-    )
-
-    df = df.reindex(full_index)
-    return df
+    full_index = pd.date_range(start=df.index.min(), end=df.index.max(), freq=freq)
+    return df.reindex(full_index)
 
 
 def safe_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-
     for c in out.columns:
         if not pd.api.types.is_numeric_dtype(out[c]):
             out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    out = out.replace([np.inf, -np.inf], np.nan)
-    return out
+    return out.replace([np.inf, -np.inf], np.nan)
 
 
-def get_last_valid_target_timestamp(
-    df: pd.DataFrame,
-    target_col: str = TARGET_COL,
-) -> pd.Timestamp:
+def get_last_valid_target_timestamp(df: pd.DataFrame, target_col: str = TARGET_COL) -> pd.Timestamp:
     valid = df[df[target_col].notna()]
-
     if valid.empty:
         raise ValueError(f"Nessun valore valido trovato nella colonna target '{target_col}'.")
-
     return valid.index.max()
 
 
-def make_future_index_after(
-    last_ts: pd.Timestamp,
-    steps: int = STEPS,
-    freq: str = FREQ,
-) -> pd.DatetimeIndex:
-    return pd.date_range(
-        start=last_ts + pd.Timedelta(freq),
-        periods=steps,
-        freq=freq,
-    )
-
-
-def ensure_future_rows(
-    df: pd.DataFrame,
-    steps: int = STEPS,
-    freq: str = FREQ,
-) -> pd.DataFrame:
-    df = df.copy().sort_index()
-
-    last_valid_target_time = get_last_valid_target_timestamp(df, TARGET_COL)
-
-    required_future_index = make_future_index_after(
-        last_valid_target_time,
-        steps=steps,
-        freq=freq,
-    )
-
-    full_index = df.index.union(required_future_index)
-    df = df.reindex(full_index).sort_index()
-
-    return df
-
-
 # ============================================================
-# FEATURE ENGINEERING
+# FEATURE ENGINEERING  (IDENTICO AL TRAINING - copia verbatim)
 # ============================================================
 
-def add_time_features_from_index(
-    index: pd.DatetimeIndex,
-    prefix: str = "",
-) -> pd.DataFrame:
+def _italian_holiday_flags(index: pd.DatetimeIndex) -> Dict[str, np.ndarray]:
+    dates = pd.DatetimeIndex(index.date)
+
+    if HAS_HOLIDAYS:
+        years = range(int(dates.year.min()), int(dates.year.max()) + 2)
+        it_holidays = holidays.Italy(years=years)
+
+        is_hol = pd.Series(dates, index=index).isin(it_holidays).to_numpy()
+        is_hol_tomorrow = pd.Series(dates + pd.Timedelta(days=1), index=index).isin(it_holidays).to_numpy()
+        is_hol_yesterday = pd.Series(dates - pd.Timedelta(days=1), index=index).isin(it_holidays).to_numpy()
+    else:
+        is_hol = np.zeros(len(index), dtype=bool)
+        is_hol_tomorrow = np.zeros(len(index), dtype=bool)
+        is_hol_yesterday = np.zeros(len(index), dtype=bool)
+
+    return {
+        "is_holiday": is_hol.astype(int),
+        "is_day_before_holiday": is_hol_tomorrow.astype(int),   # domani e' festivo
+        "is_day_after_holiday": is_hol_yesterday.astype(int),   # ieri era festivo
+    }
+
+
+def add_time_features_from_index(index: pd.DatetimeIndex, prefix: str = "") -> pd.DataFrame:
     x = pd.DataFrame(index=index)
 
     x[f"{prefix}hour"] = index.hour
@@ -229,6 +153,15 @@ def add_time_features_from_index(
     x[f"{prefix}month_sin"] = np.sin(2 * np.pi * x[f"{prefix}month"] / 12)
     x[f"{prefix}month_cos"] = np.cos(2 * np.pi * x[f"{prefix}month"] / 12)
 
+    # --- festivi italiani (feature nota in anticipo) ---
+    hol_flags = _italian_holiday_flags(index)
+    for name, values in hol_flags.items():
+        x[f"{prefix}{name}"] = values
+
+    x[f"{prefix}is_non_working_day"] = (
+        (x[f"{prefix}is_weekend"] == 1) | (x[f"{prefix}is_holiday"] == 1)
+    ).astype(int)
+
     return x
 
 
@@ -241,17 +174,9 @@ def add_pun_features(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = time_df[c]
 
     lag_map = {
-        "pun_lag_15m": 1,
-        "pun_lag_30m": 2,
-        "pun_lag_1h": 4,
-        "pun_lag_2h": 8,
-        "pun_lag_4h": 16,
-        "pun_lag_8h": 32,
-        "pun_lag_12h": 48,
-        "pun_lag_1d": 96,
-        "pun_lag_2d": 192,
-        "pun_lag_3d": 288,
-        "pun_lag_7d": 672,
+        "pun_lag_15m": 1, "pun_lag_30m": 2, "pun_lag_1h": 4, "pun_lag_2h": 8,
+        "pun_lag_4h": 16, "pun_lag_8h": 32, "pun_lag_12h": 48, "pun_lag_1d": 96,
+        "pun_lag_2d": 192, "pun_lag_3d": 288, "pun_lag_7d": 672,
     }
 
     if TARGET_COL in df.columns:
@@ -263,33 +188,23 @@ def add_pun_features(df: pd.DataFrame) -> pd.DataFrame:
         df["pun_same_q_3d"] = df[TARGET_COL].shift(288)
         df["pun_same_q_7d"] = df[TARGET_COL].shift(672)
 
-        same_q_cols = [
-            "pun_same_q_1d",
-            "pun_same_q_2d",
-            "pun_same_q_3d",
-            "pun_same_q_7d",
-        ]
-
+        same_q_cols = ["pun_same_q_1d", "pun_same_q_2d", "pun_same_q_3d", "pun_same_q_7d"]
         df["pun_same_q_mean"] = df[same_q_cols].mean(axis=1)
         df["pun_same_q_std"] = df[same_q_cols].std(axis=1)
         df["pun_same_q_max"] = df[same_q_cols].max(axis=1)
         df["pun_same_q_min"] = df[same_q_cols].min(axis=1)
 
         s = df[TARGET_COL].shift(1)
-
         df["pun_roll_mean_1h"] = s.rolling(4, min_periods=2).mean()
         df["pun_roll_std_1h"] = s.rolling(4, min_periods=2).std()
-
         df["pun_roll_mean_4h"] = s.rolling(16, min_periods=4).mean()
         df["pun_roll_std_4h"] = s.rolling(16, min_periods=4).std()
         df["pun_roll_max_4h"] = s.rolling(16, min_periods=4).max()
         df["pun_roll_min_4h"] = s.rolling(16, min_periods=4).min()
-
         df["pun_roll_mean_1d"] = s.rolling(96, min_periods=24).mean()
         df["pun_roll_std_1d"] = s.rolling(96, min_periods=24).std()
         df["pun_roll_max_1d"] = s.rolling(96, min_periods=24).max()
         df["pun_roll_min_1d"] = s.rolling(96, min_periods=24).min()
-
         df["pun_roll_mean_7d"] = s.rolling(672, min_periods=96).mean()
         df["pun_roll_std_7d"] = s.rolling(672, min_periods=96).std()
 
@@ -309,61 +224,21 @@ def add_pun_features(df: pd.DataFrame) -> pd.DataFrame:
         df["load_lag_4h"] = df["forecast_total_load_MW"].shift(16)
         df["load_lag_1d"] = df["forecast_total_load_MW"].shift(96)
         df["load_lag_7d"] = df["forecast_total_load_MW"].shift(672)
-
         df["load_diff_1h"] = df["forecast_total_load_MW"] - df["forecast_total_load_MW"].shift(4)
         df["load_diff_4h"] = df["forecast_total_load_MW"] - df["forecast_total_load_MW"].shift(16)
         df["load_diff_1d"] = df["forecast_total_load_MW"] - df["forecast_total_load_MW"].shift(96)
-
-        df["load_roll_mean_4h"] = (
-            df["forecast_total_load_MW"]
-            .shift(1)
-            .rolling(16, min_periods=4)
-            .mean()
-        )
-
-        df["load_roll_std_4h"] = (
-            df["forecast_total_load_MW"]
-            .shift(1)
-            .rolling(16, min_periods=4)
-            .std()
-        )
-
-        df["load_roll_mean_1d"] = (
-            df["forecast_total_load_MW"]
-            .shift(1)
-            .rolling(96, min_periods=24)
-            .mean()
-        )
-
-        df["load_roll_std_1d"] = (
-            df["forecast_total_load_MW"]
-            .shift(1)
-            .rolling(96, min_periods=24)
-            .std()
-        )
+        df["load_roll_mean_4h"] = df["forecast_total_load_MW"].shift(1).rolling(16, min_periods=4).mean()
+        df["load_roll_std_4h"] = df["forecast_total_load_MW"].shift(1).rolling(16, min_periods=4).std()
+        df["load_roll_mean_1d"] = df["forecast_total_load_MW"].shift(1).rolling(96, min_periods=24).mean()
+        df["load_roll_std_1d"] = df["forecast_total_load_MW"].shift(1).rolling(96, min_periods=24).std()
 
     if "actual_generation_GWh_hydro" in df.columns:
         df["hydro_lag_1d"] = df["actual_generation_GWh_hydro"].shift(96)
         df["hydro_lag_2d"] = df["actual_generation_GWh_hydro"].shift(192)
         df["hydro_lag_7d"] = df["actual_generation_GWh_hydro"].shift(672)
+        df["hydro_roll_mean_1d"] = df["actual_generation_GWh_hydro"].shift(1).rolling(96, min_periods=24).mean()
 
-        df["hydro_roll_mean_1d"] = (
-            df["actual_generation_GWh_hydro"]
-            .shift(1)
-            .rolling(96, min_periods=24)
-            .mean()
-        )
-
-    zone_cols = [
-        "CALA_B16",
-        "CNOR_B16",
-        "CSUD_B16",
-        "NORD_B16",
-        "SARD_B16",
-        "SICI_B16",
-        "SUD_B16",
-    ]
-
+    zone_cols = ["CALA_B16", "CNOR_B16", "CSUD_B16", "NORD_B16", "SARD_B16", "SICI_B16", "SUD_B16"]
     existing_zone_cols = [c for c in zone_cols if c in df.columns]
 
     if existing_zone_cols:
@@ -379,133 +254,57 @@ def add_pun_features(df: pd.DataFrame) -> pd.DataFrame:
 
         if "NORD_B16" in df.columns and "SUD_B16" in df.columns:
             df["spread_nord_sud"] = df["NORD_B16"] - df["SUD_B16"]
-
         if "CNOR_B16" in df.columns and "CSUD_B16" in df.columns:
             df["spread_cnor_csud"] = df["CNOR_B16"] - df["CSUD_B16"]
 
     if "forecast_total_load_MW" in df.columns:
         df["evening_load"] = df["forecast_total_load_MW"] * df["is_evening_peak"]
-
     if "load_ramp_1h" in df.columns:
         df["evening_load_ramp"] = df["load_ramp_1h"] * df["is_evening_peak"]
-
     if "load_forecast_error" in df.columns:
         df["evening_load_forecast_error"] = df["load_forecast_error"] * df["is_evening_peak"]
-
     if "pun_roll_std_4h" in df.columns:
         df["evening_volatility_4h"] = df["pun_roll_std_4h"] * df["is_evening_peak"]
-
     if "pun_roll_std_1d" in df.columns:
         df["evening_volatility_1d"] = df["pun_roll_std_1d"] * df["is_evening_peak"]
-
     if "momentum_4h" in df.columns:
         df["evening_momentum_4h"] = df["momentum_4h"] * df["is_evening_peak"]
-
     if "momentum_1d" in df.columns:
         df["evening_momentum_1d"] = df["momentum_1d"] * df["is_evening_peak"]
-
     if "cloud_cover_mean" in df.columns:
         df["evening_cloud_cover"] = df["cloud_cover_mean"] * df["is_evening_peak"]
-
     if "bari_wind_speed_80m" in df.columns:
         df["evening_wind_bari"] = df["bari_wind_speed_80m"] * df["is_evening_peak"]
 
     if TARGET_COL in df.columns:
-        rolling_q85 = (
-            df[TARGET_COL]
-            .shift(1)
-            .rolling(96, min_periods=24)
-            .quantile(0.85)
-        )
+        rolling_q85 = df[TARGET_COL].shift(1).rolling(96, min_periods=24).quantile(0.85)
+        rolling_q90 = df[TARGET_COL].shift(1).rolling(96, min_periods=24).quantile(0.90)
+        df["recent_spike_q85_flag"] = (df[TARGET_COL].shift(1) > rolling_q85).astype(int)
+        df["recent_spike_q90_flag"] = (df[TARGET_COL].shift(1) > rolling_q90).astype(int)
+        df["recent_evening_spike_q85_flag"] = df["recent_spike_q85_flag"] * df["is_evening_peak"]
+        df["recent_evening_spike_q90_flag"] = df["recent_spike_q90_flag"] * df["is_evening_peak"]
 
-        rolling_q90 = (
-            df[TARGET_COL]
-            .shift(1)
-            .rolling(96, min_periods=24)
-            .quantile(0.90)
-        )
+    return safe_numeric_df(df)
 
-        df["recent_spike_q85_flag"] = (
-            df[TARGET_COL].shift(1) > rolling_q85
-        ).astype(int)
-
-        df["recent_spike_q90_flag"] = (
-            df[TARGET_COL].shift(1) > rolling_q90
-        ).astype(int)
-
-        df["recent_evening_spike_q85_flag"] = (
-            df["recent_spike_q85_flag"] * df["is_evening_peak"]
-        )
-
-        df["recent_evening_spike_q90_flag"] = (
-            df["recent_spike_q90_flag"] * df["is_evening_peak"]
-        )
-
-    df = safe_numeric_df(df)
-    return df
-
-
-# ============================================================
-# DIRECT SUPERVISED DATASET
-# ============================================================
 
 def get_base_feature_columns(df_feat: pd.DataFrame) -> List[str]:
-    feature_cols = []
-
-    for c in df_feat.columns:
-        if pd.api.types.is_numeric_dtype(df_feat[c]):
-            feature_cols.append(c)
-
-    return feature_cols
+    return [c for c in df_feat.columns if pd.api.types.is_numeric_dtype(df_feat[c])]
 
 
-def make_direct_X_y_for_horizon(
-    df_feat: pd.DataFrame,
-    horizon: int,
-    base_feature_cols: List[str],
-    future_known_exog: Optional[List[str]] = None,
-    target_col: str = TARGET_COL,
-    freq: str = FREQ,
-) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+# ============================================================
+# HELPER PER IL FORECAST (righe future + costruzione X)
+# ============================================================
 
-    if future_known_exog is None:
-        future_known_exog = []
+def make_future_index_after(last_ts: pd.Timestamp, steps: int = STEPS, freq: str = FREQ) -> pd.DatetimeIndex:
+    return pd.date_range(start=last_ts + pd.Timedelta(freq), periods=steps, freq=freq)
 
-    df_feat = df_feat.copy().sort_index()
 
-    y = df_feat[target_col].shift(-horizon)
-
-    X = df_feat[base_feature_cols].copy()
-
-    target_times = df_feat.index + pd.Timedelta(freq) * horizon
-
-    future_cal = add_time_features_from_index(
-        pd.DatetimeIndex(target_times),
-        prefix="future_",
-    )
-    future_cal.index = df_feat.index
-
-    X = X.join(future_cal)
-
-    existing_future_cols = [c for c in future_known_exog if c in df_feat.columns]
-
-    for c in existing_future_cols:
-        X[f"future_{c}"] = df_feat[c].shift(-horizon)
-
-    meta = pd.DataFrame(index=df_feat.index)
-    meta["origin_time"] = df_feat.index
-    meta["target_time"] = target_times
-    meta["horizon"] = horizon
-
-    valid = y.notna()
-
-    X = X.loc[valid]
-    y = y.loc[valid]
-    meta = meta.loc[valid]
-
-    X = safe_numeric_df(X)
-
-    return X, y, meta
+def ensure_future_rows(df: pd.DataFrame, steps: int = STEPS, freq: str = FREQ) -> pd.DataFrame:
+    df = df.copy().sort_index()
+    last_valid_target_time = get_last_valid_target_timestamp(df, TARGET_COL)
+    required_future_index = make_future_index_after(last_valid_target_time, steps=steps, freq=freq)
+    full_index = df.index.union(required_future_index)
+    return df.reindex(full_index).sort_index()
 
 
 def build_forecast_X_for_single_horizon(
@@ -521,219 +320,52 @@ def build_forecast_X_for_single_horizon(
 
     df_feat = df_feat.copy().sort_index()
 
-    X = df_feat[base_feature_cols].copy()
+    # reindex (invece di selezione diretta): eventuali base cols mancanti -> NaN
+    X = df_feat.reindex(columns=base_feature_cols).copy()
 
     target_times = df_feat.index + pd.Timedelta(freq) * horizon
-
-    future_cal = add_time_features_from_index(
-        pd.DatetimeIndex(target_times),
-        prefix="future_",
-    )
+    future_cal = add_time_features_from_index(pd.DatetimeIndex(target_times), prefix="future_")
     future_cal.index = df_feat.index
-
     X = X.join(future_cal)
 
-    existing_future_cols = [c for c in future_known_exog if c in df_feat.columns]
-
-    for c in existing_future_cols:
+    for c in [c for c in future_known_exog if c in df_feat.columns]:
         X[f"future_{c}"] = df_feat[c].shift(-horizon)
 
-    X = safe_numeric_df(X)
-
-    return X
-
-
-def filter_feature_columns(
-    X_train: pd.DataFrame,
-    missing_threshold: float = 0.98,
-) -> List[str]:
-
-    cols = []
-
-    for c in X_train.columns:
-        s = X_train[c]
-
-        if not pd.api.types.is_numeric_dtype(s):
-            continue
-
-        miss_ratio = s.isna().mean()
-        if miss_ratio > missing_threshold:
-            continue
-
-        nunique = s.nunique(dropna=True)
-        if nunique <= 1:
-            continue
-
-        cols.append(c)
-
-    return cols
-
-
-def make_lgbm_pipeline(params: Dict) -> Pipeline:
-    return Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("model", LGBMRegressor(**params)),
-        ]
-    )
+    return safe_numeric_df(X)
 
 
 # ============================================================
-# METRICS
-# ============================================================
-
-def directional_accuracy_from_origin(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_origin: np.ndarray,
-) -> float:
-
-    true_dir = np.sign(y_true - y_origin)
-    pred_dir = np.sign(y_pred - y_origin)
-
-    valid = ~np.isnan(true_dir) & ~np.isnan(pred_dir)
-
-    if valid.sum() == 0:
-        return np.nan
-
-    return float((true_dir[valid] == pred_dir[valid]).mean())
-
-
-def compute_metrics(y_true, y_pred) -> Dict[str, float]:
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-
-    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
-
-    y_true = y_true[mask]
-    y_pred = y_pred[mask]
-
-    if len(y_true) == 0:
-        return {
-            "MAE": np.nan,
-            "RMSE": np.nan,
-            "MAPE": np.nan,
-            "R2": np.nan,
-            "Bias": np.nan,
-        }
-
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = math.sqrt(mean_squared_error(y_true, y_pred))
-
-    nonzero = np.abs(y_true) > 1e-6
-
-    if nonzero.sum() > 0:
-        mape = mean_absolute_percentage_error(y_true[nonzero], y_pred[nonzero])
-    else:
-        mape = np.nan
-
-    if len(y_true) >= 2:
-        r2 = r2_score(y_true, y_pred)
-    else:
-        r2 = np.nan
-
-    bias = float(np.mean(y_pred - y_true))
-
-    return {
-        "MAE": float(mae),
-        "RMSE": float(rmse),
-        "MAPE": float(mape),
-        "R2": float(r2),
-        "Bias": float(bias),
-    }
-
-
-# ============================================================
-# OPTUNA BLEND (usato in fase di training)
-# ============================================================
-
-def calculate_blended_prediction(
-    pred_p50: np.ndarray,
-    pred_p90: np.ndarray,
-    w90: float,
-) -> np.ndarray:
-
-    return (1.0 - w90) * pred_p50 + w90 * pred_p90
-
-
-def get_w90_for_timestamps(
-    index: pd.DatetimeIndex,
-    blend_config: Dict = BLEND_CONFIG,
-) -> pd.Series:
-
-    w = pd.Series(
-        float(blend_config.get("default_w90", 0.0)),
-        index=index,
-        dtype=float,
-    )
-
-    hourly = blend_config.get("hourly_w90", {})
-
-    for hour in range(24):
-        val = None
-
-        if hour in hourly:
-            val = hourly[hour]
-        elif str(hour) in hourly:
-            val = hourly[str(hour)]
-
-        if val is not None:
-            w.loc[index.hour == hour] = float(val)
-
-    return w
-
-
-def blend_p50_p90(
-    pred_p50: pd.Series,
-    pred_p90: pd.Series,
-    blend_config: Dict = BLEND_CONFIG,
-) -> pd.Series:
-
-    pred_p50 = pred_p50.copy()
-    pred_p90 = pred_p90.reindex(pred_p50.index)
-
-    w90 = get_w90_for_timestamps(pred_p50.index, blend_config)
-
-    out = (1.0 - w90) * pred_p50 + w90 * pred_p90
-    out.name = "PUN_forecast_blend"
-
-    return out
-
-
-# ============================================================
-# LOAD ARTIFACTS
+# LOAD ARTIFACTS (v2)
 # ============================================================
 
 def load_direct_artifacts(model_dir: str = ".") -> Dict:
-    model_p50_path = os.path.join(model_dir, MODEL_P50_NAME)
-    model_p90_path = os.path.join(model_dir, MODEL_P90_NAME)
+    model_path = os.path.join(model_dir, MODEL_QUANTILES_NAME)
     metadata_path = os.path.join(model_dir, METADATA_NAME)
 
-    if not os.path.exists(model_p50_path):
-        raise FileNotFoundError(f"File non trovato: {model_p50_path}")
-
-    if not os.path.exists(model_p90_path):
-        raise FileNotFoundError(f"File non trovato: {model_p90_path}")
-
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"File non trovato: {model_path}")
     if not os.path.exists(metadata_path):
         raise FileNotFoundError(f"File non trovato: {metadata_path}")
 
-    models_p50 = joblib.load(model_p50_path)
-    models_p90 = joblib.load(model_p90_path)
+    models_q = joblib.load(model_path)
 
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
     return {
-        "models_p50": models_p50,
-        "models_p90": models_p90,
+        "models_q": models_q,
         "metadata": metadata,
     }
 
 
 # ============================================================
-# FORECAST NEXT 96
+# FORECAST NEXT 96 (v2: quantile grid + banda CQR)
 # ============================================================
+
+def _qcol(q: float) -> str:
+    """Nome colonna leggibile per un quantile (0.05 -> PUN_q05, 0.5 -> PUN_q50)."""
+    return f"PUN_q{int(round(float(q) * 100)):02d}"
+
 
 def forecast_next_96(
     df: pd.DataFrame,
@@ -746,16 +378,23 @@ def forecast_next_96(
         output_dir = model_dir
 
     artifacts = load_direct_artifacts(model_dir)
-
-    models_p50 = artifacts["models_p50"]
-    models_p90 = artifacts["models_p90"]
+    models_q = artifacts["models_q"]
     metadata = artifacts["metadata"]
 
     steps = int(metadata["steps"])
     base_feature_cols = metadata["base_feature_cols"]
     selected_features_by_horizon = metadata["selected_features_by_horizon"]
     future_known_exog = metadata.get("future_known_exog", FUTURE_KNOWN_EXOG)
-    blend_config = metadata.get("blend_config", BLEND_CONFIG)
+    quantile_levels = metadata["quantile_levels"]                 # lista di float
+    conformal_pairs = metadata.get("conformal_pairs", [])         # lista di [q_low, q_high]
+    conformal_offsets = metadata.get("conformal_offsets", {})     # {"qlow_qhigh": {"0": off, ...}}
+
+    # avviso train/serve skew sui festivi
+    if metadata.get("has_holidays_lib") and not HAS_HOLIDAYS:
+        print(
+            "ATTENZIONE: il modello e' stato allenato con la libreria 'holidays' "
+            "ma qui non e' installata: le feature festivi saranno tutte 0 -> possibile degrado."
+        )
 
     df = ensure_datetime_index(df)
     df = infer_and_fix_freq(df, FREQ)
@@ -772,17 +411,18 @@ def forecast_next_96(
     if last_origin not in df_feat.index:
         raise ValueError("last_origin non trovato in df_feat dopo reindex.")
 
+    # coppia conformale per la banda mostrata = la piu' larga disponibile
+    primary_pair = None
+    if conformal_pairs:
+        primary_pair = max(conformal_pairs, key=lambda p: float(p[1]) - float(p[0]))
+
     rows = []
 
     for h in range(1, steps + 1):
         h_key = str(h)
 
-        if h_key not in models_p50:
-            raise KeyError(f"Modello p50 mancante per horizon {h_key}.")
-
-        if h_key not in models_p90:
-            raise KeyError(f"Modello p90 mancante per horizon {h_key}.")
-
+        if h_key not in models_q:
+            raise KeyError(f"Modelli quantili mancanti per horizon {h_key}.")
         if h_key not in selected_features_by_horizon:
             raise KeyError(f"Feature selezionate mancanti per horizon {h_key}.")
 
@@ -798,60 +438,63 @@ def forecast_next_96(
             raise ValueError(f"Origin {last_origin} non presente in X_forecast per h={h}.")
 
         selected_cols = selected_features_by_horizon[h_key]
-
-        missing_cols = [c for c in selected_cols if c not in X_forecast.columns]
-        for c in missing_cols:
-            X_forecast[c] = np.nan
-
-        X_row = X_forecast.loc[[last_origin], selected_cols]
-
-        pred_p50 = float(models_p50[h_key].predict(X_row)[0])
-        pred_p90 = float(models_p90[h_key].predict(X_row)[0])
+        # reindex(columns=...) garantisce ordine == selected_cols e riempie i mancanti con NaN
+        X_row = X_forecast.loc[[last_origin]].reindex(columns=selected_cols)
 
         target_time = last_origin + pd.Timedelta(FREQ) * h
+        target_hour = int(pd.Timestamp(target_time).hour)
 
-        rows.append(
-            {
-                "origin_time": last_origin,
-                "target_time": target_time,
-                "horizon": h,
-                "PUN_p50": pred_p50,
-                "PUN_p90": pred_p90,
-            }
-        )
+        row = {
+            "origin_time": last_origin,
+            "target_time": target_time,
+            "horizon": h,
+            "hour": target_hour,
+        }
+
+        # predizione di ogni quantile
+        q_preds: Dict[float, float] = {}
+        q_dict = models_q[h_key]
+        for q in quantile_levels:
+            q_key = str(q)
+            model = q_dict.get(q_key)
+            if model is None:
+                raise KeyError(f"Modello quantile {q_key} mancante per horizon {h_key}.")
+            pred = float(model.predict(X_row)[0])
+            q_preds[float(q)] = pred
+            row[_qcol(q)] = pred
+
+        # punto forecast = q50 (fallback: quantile piu' vicino a 0.5)
+        if 0.5 in q_preds:
+            row["PUN_forecast"] = q_preds[0.5]
+        else:
+            nearest = min(q_preds, key=lambda qq: abs(qq - 0.5))
+            row["PUN_forecast"] = q_preds[nearest]
+
+        # banda calibrata CQR sulla coppia piu' larga
+        if primary_pair is not None:
+            q_low = float(primary_pair[0])
+            q_high = float(primary_pair[1])
+            pair_key = f"{q_low}_{q_high}"
+
+            offset = 0.0
+            if pair_key in conformal_offsets:
+                offset = float(conformal_offsets[pair_key].get(str(target_hour), 0.0))
+
+            low_raw = q_preds.get(q_low)
+            high_raw = q_preds.get(q_high)
+
+            if low_raw is not None and high_raw is not None:
+                row["PUN_lower"] = low_raw - offset
+                row["PUN_upper"] = high_raw + offset
+                row["PUN_lower_raw"] = low_raw
+                row["PUN_upper_raw"] = high_raw
+                row["band_coverage"] = q_high - q_low
+
+        rows.append(row)
 
     forecast_df = pd.DataFrame(rows)
     forecast_df["target_time"] = pd.to_datetime(forecast_df["target_time"])
-    forecast_df["hour"] = forecast_df["target_time"].dt.hour
-
-    target_index = pd.DatetimeIndex(forecast_df["target_time"])
-
-    w90 = get_w90_for_timestamps(
-        index=target_index,
-        blend_config=blend_config,
-    )
-
-    forecast_df["w90"] = w90.values
-    forecast_df["w50"] = 1.0 - forecast_df["w90"]
-
-    forecast_df["PUN_forecast"] = (
-        forecast_df["w50"] * forecast_df["PUN_p50"]
-        + forecast_df["w90"] * forecast_df["PUN_p90"]
-    )
-
-    forecast_df = forecast_df[
-        [
-            "origin_time",
-            "target_time",
-            "horizon",
-            "hour",
-            "PUN_p50",
-            "PUN_p90",
-            "w50",
-            "w90",
-            "PUN_forecast",
-        ]
-    ]
+    forecast_df = forecast_df.sort_values("target_time").reset_index(drop=True)
 
     if save_csv:
         os.makedirs(output_dir, exist_ok=True)
@@ -863,41 +506,48 @@ def forecast_next_96(
 
 
 # ============================================================
-# NATIVE FEATURE IMPORTANCE (sostituisce SHAP legacy)
+# IMPORTANZA FEATURE NATIVA (gain LightGBM, dai modelli q50)
 # ============================================================
 
 def build_native_importance_df(
-    models_p50: Dict,
+    models_q: Dict,
     metadata: Dict,
+    quantile: str = "0.5",
 ) -> pd.DataFrame:
     """
-    Importanza nativa LightGBM (gain) per ciascun horizon (1..96),
-    ricavata direttamente dai modelli p50 gia' addestrati.
-    Sostituisce la vecchia spiegabilita' SHAP, incompatibile con
-    l'architettura a 96 modelli indipendenti del nuovo forecaster.
+    Importanza nativa LightGBM (gain) per ciascun horizon, presa dai
+    modelli del quantile mediano (q50 di default). Se il quantile
+    richiesto non esiste, usa quello piu' vicino a 0.5.
     """
     selected_features_by_horizon = metadata["selected_features_by_horizon"]
 
     rows = []
 
-    for h_key, pipe in models_p50.items():
-        h = int(h_key)
-        feats = selected_features_by_horizon.get(h_key, [])
+    for h_key, q_dict in models_q.items():
+        pipe = q_dict.get(quantile)
+        if pipe is None:
+            avail = sorted(q_dict.keys(), key=lambda k: abs(float(k) - 0.5))
+            if not avail:
+                continue
+            pipe = q_dict[avail[0]]
 
+        feats = selected_features_by_horizon.get(h_key, [])
         model = pipe.named_steps["model"]
         importances = model.booster_.feature_importance(importance_type="gain")
 
         for f, imp in zip(feats, importances):
-            rows.append({"horizon": h, "feature": f, "importance": float(imp)})
+            rows.append({"horizon": int(h_key), "feature": f, "importance": float(imp)})
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 
 def summarize_native_importance(
     importance_df: pd.DataFrame,
     top_n: int = 20,
 ) -> pd.DataFrame:
+    if importance_df is None or importance_df.empty:
+        return pd.DataFrame(columns=["feature", "importance"])
+
     summary = (
         importance_df.groupby("feature")["importance"]
         .mean()
