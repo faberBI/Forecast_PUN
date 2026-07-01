@@ -274,7 +274,7 @@ def validate_required_columns(df: pd.DataFrame, required_cols: list, df_name: st
 
 
 # =========================================================
-# CORE PIPELINE (invariata: aggiornamento dataset storico)
+# CORE PIPELINE (aggiornamento dataset storico)
 # =========================================================
 def pipeline_run():
     log_lines = []
@@ -471,6 +471,8 @@ def pipeline_run():
     log(f"Shape finale: {df_final.shape}")
     log(f"Ultima data finale: {df_final.index.max()}")
 
+    # (migliorìa) assicura che la cartella di output esista prima di salvare
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
     df_final.to_parquet(OUTPUT_PATH)
     log(f"Salvato file: {OUTPUT_PATH}")
 
@@ -881,6 +883,8 @@ if run_forecast:
             .sort_values("Datetime")
         )
 
+        # (migliorìa) assicura che la cartella di output esista prima di salvare
+        os.makedirs(os.path.dirname(FORECAST_PATH), exist_ok=True)
         df_all.to_parquet(FORECAST_PATH)
 
         upload_to_dropbox(
@@ -981,8 +985,10 @@ if (
     ))
     st.plotly_chart(fig_band, use_container_width=True)
 
-    fig_w = px.bar(preds, x="Datetime", y="w90", title="Peso w90 applicato per fascia oraria")
-    st.plotly_chart(fig_w, use_container_width=True)
+    # (migliorìa) mostro il peso w90 solo se la colonna esiste
+    if "w90" in preds.columns:
+        fig_w = px.bar(preds, x="Datetime", y="w90", title="Peso w90 applicato per fascia oraria")
+        st.plotly_chart(fig_w, use_container_width=True)
 
     # =====================================================
     # IMPORTANZA FEATURE (nativa LightGBM, sostituisce SHAP)
@@ -1095,15 +1101,22 @@ if uploaded_file is not None:
             df_eval["created_at"] = run_ts
 
             # =====================================================
-            # ✅ READ DA DROPBOX (SOURCE OF TRUTH)
+            # ✅ READ DA DROPBOX (SOURCE OF TRUTH) + APPEND SICURO
+            # (migliorìa) rileggo lo storico da Dropbox e faccio append,
+            # così le metriche rolling e il trend non vengono azzerati
+            # a ogni upload. Al primo run il file non esiste ancora
+            # e si ricade su df_eval.copy().
             # =====================================================
-            #try:
-              #df_old = load_from_dropbox("/forecast_pun/error_history.parquet",st.secrets["DROPBOX_TOKEN"])
-              #df_all = pd.concat([df_old, df_eval], ignore_index=True)
+            try:
+                df_old = load_from_dropbox(
+                    "/forecast_pun/error_history.parquet",
+                    st.secrets["DROPBOX_TOKEN"],
+                )
+                df_all = pd.concat([df_old, df_eval], ignore_index=True)
+            except Exception:
+                # primo run: file non esiste ancora su Dropbox
+                df_all = df_eval.copy()
 
-            #except Exception:
-            # ✅ primo run (file non esiste ancora)
-            df_all = df_eval.copy()
             # =====================================================
             # ✅ CLEAN + APPEND SICURO
             # =====================================================
@@ -1115,6 +1128,8 @@ if uploaded_file is not None:
             # =====================================================
             # ✅ SAVE LOCALE + DROPBOX
             # =====================================================
+            # (migliorìa) assicura che la cartella di output esista
+            os.makedirs(os.path.dirname(ERROR_PATH), exist_ok=True)
             df_all.to_parquet(ERROR_PATH)
             upload_to_dropbox(ERROR_PATH, "/forecast_pun/error_history.parquet", st.secrets["DROPBOX_TOKEN"])
 
