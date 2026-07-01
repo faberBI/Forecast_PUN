@@ -629,30 +629,28 @@ except:
     st.warning("⚠️ Nessun dato disponibile su Dropbox")
 
 # =========================================================
-# LOAD MODEL FROM DROPBOX — PUN DIRECT 96 (NUOVO MODELLO)
+# LOAD MODEL FROM DROPBOX — PUN DIRECT 96 v2 (quantile grid + CQR)
 # =========================================================
-# Il vecchio modello (skforecast ForecasterDirect + pipeline.py + SHAP)
-# e' stato sostituito dal nuovo forecaster "PUN Direct 96":
-# 96 coppie di modelli LightGBM (p50/p90), uno per ciascun horizon
-# di 15 minuti, con blend p50/p90 ottimizzato via Optuna per fascia oraria.
+# Forecaster "PUN Direct 96 v2": per ciascun horizon di 15 minuti una
+# griglia di modelli LightGBM quantili (0.05..0.95). Il punto forecast e'
+# la mediana q50; la banda di incertezza e' calibrata con conformal (CQR)
+# per ora del giorno. Niente piu' blend p50/p90.
 #
-# I 3 artefatti attesi su Dropbox sono quelli prodotti da
-# functions/pun_direct_forecast.py::train_direct_models(...):
-#   - pun_direct_lgbm_p50.joblib
-#   - pun_direct_lgbm_p90.joblib
+# I 2 artefatti essenziali attesi su Dropbox (prodotti da
+# train_direct_quantile_models(...)):
+#   - pun_direct_lgbm_quantiles.joblib   (dict[str h][str q] -> Pipeline)
 #   - pun_direct_metadata.json
+# (i due CSV pinball/coverage restano su Dropbox ma non servono all'app)
 
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DROPBOX_MODEL_DIR = "/forecast_pun/models_direct"
 
-MODEL_P50_PATH = MODEL_DIR / "pun_direct_lgbm_p50.joblib"
-MODEL_P90_PATH = MODEL_DIR / "pun_direct_lgbm_p90.joblib"
+MODEL_QUANTILES_PATH = MODEL_DIR / "pun_direct_lgbm_quantiles.joblib"
 METADATA_PATH = MODEL_DIR / "pun_direct_metadata.json"
 
-DROPBOX_MODEL_P50_PATH = f"{DROPBOX_MODEL_DIR}/pun_direct_lgbm_p50.joblib"
-DROPBOX_MODEL_P90_PATH = f"{DROPBOX_MODEL_DIR}/pun_direct_lgbm_p90.joblib"
+DROPBOX_MODEL_QUANTILES_PATH = f"{DROPBOX_MODEL_DIR}/pun_direct_lgbm_quantiles.joblib"
 DROPBOX_METADATA_PATH = f"{DROPBOX_MODEL_DIR}/pun_direct_metadata.json"
 
 
@@ -694,12 +692,11 @@ def local_file_ok(path: Path) -> bool:
 @st.cache_resource(show_spinner=False)
 def load_model_artifacts_from_dropbox(force_download: bool = False):
     """
-    Carica il modello PUN Direct 96 (p50/p90 + metadata) da Dropbox.
+    Carica il modello PUN Direct 96 v2 (quantile grid + metadata) da Dropbox.
 
     Ritorna:
     {
-        "models_p50": dict[str horizon -> Pipeline],
-        "models_p90": dict[str horizon -> Pipeline],
+        "models_q": dict[str horizon -> dict[str quantile -> Pipeline]],
         "metadata": dict,
     }
     """
@@ -707,28 +704,21 @@ def load_model_artifacts_from_dropbox(force_download: bool = False):
 
     must_download = (
         force_download
-        or not local_file_ok(MODEL_P50_PATH)
-        or not local_file_ok(MODEL_P90_PATH)
+        or not local_file_ok(MODEL_QUANTILES_PATH)
         or not local_file_ok(METADATA_PATH)
     )
 
     if must_download:
         today_minus_1 = pd.Timestamp.today() - pd.Timedelta(days=1)
         st.info(
-            f"📥 Download modello PUN Direct 96 da Dropbox aggiornato al "
+            f"📥 Download modello PUN Direct 96 v2 da Dropbox aggiornato al "
             f"{today_minus_1.strftime('%d-%m-%Y')}..."
         )
 
         download_file_from_dropbox(
             dbx=dbx,
-            dropbox_path=DROPBOX_MODEL_P50_PATH,
-            local_path=MODEL_P50_PATH,
-        )
-
-        download_file_from_dropbox(
-            dbx=dbx,
-            dropbox_path=DROPBOX_MODEL_P90_PATH,
-            local_path=MODEL_P90_PATH,
+            dropbox_path=DROPBOX_MODEL_QUANTILES_PATH,
+            local_path=MODEL_QUANTILES_PATH,
         )
 
         download_file_from_dropbox(
@@ -751,27 +741,36 @@ artifacts = load_model_artifacts_from_dropbox(
     force_download=force_model_download
 )
 
-models_p50 = artifacts["models_p50"]
-models_p90 = artifacts["models_p90"]
+models_q = artifacts["models_q"]
 model_metadata = artifacts["metadata"]
 
-st.success("✅ Modello PUN Direct 96 caricato da Dropbox")
+st.success("✅ Modello PUN Direct 96 v2 caricato da Dropbox")
+
+# avviso train/serve skew: modello allenato con festivi ma libreria assente qui
+from functions.pun_direct_forecast import HAS_HOLIDAYS as _INFER_HAS_HOLIDAYS
+if model_metadata.get("has_holidays_lib") and not _INFER_HAS_HOLIDAYS:
+    st.warning(
+        "⚠️ Il modello è stato allenato con la libreria `holidays`, ma qui non è "
+        "installata: le feature festivi saranno tutte 0 → possibile degrado. "
+        "Installa con `pip install holidays` (e aggiungila a requirements.txt)."
+    )
 
 n_base_features = len(model_metadata.get("base_feature_cols", []))
-overall_metrics = model_metadata.get("overall_metrics", {})
+quantile_levels = model_metadata.get("quantile_levels", [])
+overall_pinball = model_metadata.get("overall_pinball_by_quantile", {})
 
 st.caption(
-    f"📦 Modello: PUN Direct 96 (LightGBM p50/p90 + blend Optuna orario) | "
+    f"📦 Modello: PUN Direct 96 v2 (LightGBM quantile grid + CQR) | "
     f"steps: {model_metadata.get('steps', 96)} | "
+    f"quantili: {quantile_levels} | "
     f"feature base: {n_base_features}"
 )
 
-if overall_metrics:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("MAE (holdout)", f"{overall_metrics.get('MAE', float('nan')):.3f}")
-    c2.metric("RMSE (holdout)", f"{overall_metrics.get('RMSE', float('nan')):.3f}")
-    c3.metric("Bias (holdout)", f"{overall_metrics.get('Bias', float('nan')):.3f}")
-    c4.metric("R2 (holdout)", f"{overall_metrics.get('R2', float('nan')):.3f}")
+if overall_pinball:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pinball q50 (backtest)", f"{float(overall_pinball.get('0.5', float('nan'))):.3f}")
+    c2.metric("Pinball q10 (backtest)", f"{float(overall_pinball.get('0.1', float('nan'))):.3f}")
+    c3.metric("Pinball q90 (backtest)", f"{float(overall_pinball.get('0.9', float('nan'))):.3f}")
 
 #
 try:
@@ -844,7 +843,7 @@ if run_forecast:
         # =====================================================
         with st.spinner("⏳ Calcolo importanza feature (gain LightGBM)..."):
             importance_df = build_native_importance_df(
-                models_p50=models_p50,
+                models_q=models_q,
                 metadata=model_metadata,
             )
 
@@ -965,29 +964,43 @@ if (
     )
 
     # =====================================================
-    # BANDA DI INCERTEZZA p50 / p90
+    # BANDA DI INCERTEZZA CALIBRATA (CQR)
     # =====================================================
     st.divider()
-    st.subheader("📐 Banda p50 / p90 e peso blend orario")
+    st.subheader("📐 Banda di incertezza calibrata (CQR)")
 
     fig_band = go.Figure()
-    fig_band.add_trace(go.Scatter(
-        x=preds["Datetime"], y=preds["PUN_p90"],
-        mode="lines", name="p90", line=dict(color="rgba(255,0,0,0.3)")
-    ))
-    fig_band.add_trace(go.Scatter(
-        x=preds["Datetime"], y=preds["PUN_p50"],
-        mode="lines", name="p50", line=dict(color="rgba(0,0,255,0.4)")
-    ))
+
+    # banda calibrata: riempimento tra lower e upper
+    if {"PUN_upper", "PUN_lower"} <= set(preds.columns):
+        cov = None
+        if "band_coverage" in preds.columns and preds["band_coverage"].notna().any():
+            cov = float(preds["band_coverage"].dropna().iloc[0])
+        band_name = "Banda calibrata" + (f" ~{cov:.0%}" if cov is not None else "")
+
+        fig_band.add_trace(go.Scatter(
+            x=preds["Datetime"], y=preds["PUN_upper"],
+            mode="lines", name="upper (cal.)",
+            line=dict(width=0), showlegend=False
+        ))
+        fig_band.add_trace(go.Scatter(
+            x=preds["Datetime"], y=preds["PUN_lower"],
+            mode="lines", name=band_name,
+            fill="tonexty", fillcolor="rgba(255,0,0,0.12)",
+            line=dict(width=0)
+        ))
+
     fig_band.add_trace(go.Scatter(
         x=preds["Datetime"], y=preds["pred"],
-        mode="lines", name="Forecast (blend)", line=dict(color="black", width=2)
+        mode="lines", name="Forecast (q50)", line=dict(color="black", width=2)
     ))
     st.plotly_chart(fig_band, use_container_width=True)
 
-    # (migliorìa) mostro il peso w90 solo se la colonna esiste
-    if "w90" in preds.columns:
-        fig_w = px.bar(preds, x="Datetime", y="w90", title="Peso w90 applicato per fascia oraria")
+    # ampiezza della banda per fascia oraria
+    if {"PUN_upper", "PUN_lower"} <= set(preds.columns):
+        band_df = preds.assign(band_width=preds["PUN_upper"] - preds["PUN_lower"])
+        fig_w = px.bar(band_df, x="Datetime", y="band_width",
+                       title="Ampiezza banda calibrata (€/MWh) per fascia oraria")
         st.plotly_chart(fig_w, use_container_width=True)
 
     # =====================================================
@@ -998,11 +1011,10 @@ if (
     st.header("🔎 Importanza feature (gain LightGBM) — next 96")
 
     st.caption(
-        "Nota: il nuovo modello PUN Direct 96 usa 96 modelli LightGBM "
-        "indipendenti (uno per horizon). Al posto dello SHAP per-step "
-        "del vecchio forecaster, qui viene mostrata l'importanza nativa "
-        "(gain) media sui vari horizon: e' meno granulare ma non richiede "
-        "ricalcolo pesante ad ogni forecast."
+        "Nota: il modello PUN Direct 96 v2 usa una griglia di modelli LightGBM "
+        "quantili per ciascun horizon. L'importanza mostrata qui è quella nativa "
+        "(gain) dei modelli del quantile mediano (q50), media sui vari horizon: "
+        "è meno granulare dello SHAP per-step ma non richiede ricalcolo pesante."
     )
 
     if importance_df is None or importance_df.empty:
