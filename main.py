@@ -11,6 +11,8 @@ from scipy.stats import ks_2samp
 import plotly.graph_objects as go
 import plotly.express as px
 st.set_page_config(page_title="PUN Dataset Manager", layout="wide")
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "functions"))
 
 from functions.create_datasets import (PUNFeatureEngineering, MeteoDownloader, TernaClient, ks_drift, upload_to_dropbox, load_from_dropbox)
 from functions.forecast import (pun_to_datetime, plot_forecast_pun)
