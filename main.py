@@ -27,6 +27,8 @@ from functions.pun_direct_forecast import (
 import yaml
 import dropbox
 
+from functions.mi_section import render_mi
+
 CONFIG_PATH = "config/config.yaml"
 
 @st.cache_data
@@ -1243,3 +1245,7 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"❌ Errore processamento PUN: {e}")
         st.code(traceback.format_exc(), language="python")
+
+st.divider()
+render_mi()
+
