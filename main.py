@@ -668,6 +668,27 @@ def make_dbx_client():
     return dropbox.Dropbox(oauth2_access_token=token)
 
 
+def _dropbox_path_exists(path: str) -> bool:
+    """
+    True se il file esiste su Dropbox, False se NON esiste (not-found).
+    Se la lettura fallisce per altri motivi (auth, rete, rate limit),
+    RILANCIA l'eccezione invece di far finta che il file manchi: così il
+    chiamante non rischia di sovrascrivere uno storico esistente per colpa
+    di un errore transitorio.
+    """
+    try:
+        make_dbx_client().files_get_metadata(path)
+        return True
+    except dropbox.exceptions.ApiError as e:
+        if (
+            isinstance(e.error, dropbox.files.GetMetadataError)
+            and e.error.is_path()
+            and e.error.get_path().is_not_found()
+        ):
+            return False
+        raise
+
+
 def download_file_from_dropbox(dbx, dropbox_path: str, local_path: Path):
     """
     Scarica un file da Dropbox e lo salva localmente.
@@ -1114,19 +1135,26 @@ if uploaded_file is not None:
 
             # =====================================================
             # ✅ READ DA DROPBOX (SOURCE OF TRUTH) + APPEND SICURO
-            # (migliorìa) rileggo lo storico da Dropbox e faccio append,
-            # così le metriche rolling e il trend non vengono azzerati
-            # a ogni upload. Al primo run il file non esiste ancora
-            # e si ricade su df_eval.copy().
+            # (migliorìa) rileggo lo storico da Dropbox e faccio append.
+            # IMPORTANTE: distinguo "file assente" (primo run legittimo) da
+            # "lettura fallita" (rete/token/rate limit): se la lettura
+            # fallisce NON sovrascrivo, altrimenti un blip di rete
+            # cancellerebbe tutto lo storico accumulato.
             # =====================================================
-            try:
-                df_old = load_from_dropbox(
-                    "/forecast_pun/error_history.parquet",
-                    st.secrets["DROPBOX_TOKEN"],
-                )
+            ERR_DBX = "/forecast_pun/error_history.parquet"
+
+            if _dropbox_path_exists(ERR_DBX):
+                try:
+                    df_old = load_from_dropbox(ERR_DBX, st.secrets["DROPBOX_TOKEN"])
+                except Exception:
+                    st.error(
+                        "Impossibile leggere lo storico errori da Dropbox: "
+                        "interrompo per non sovrascriverlo. Riprova."
+                    )
+                    st.stop()
                 df_all = pd.concat([df_old, df_eval], ignore_index=True)
-            except Exception:
-                # primo run: file non esiste ancora su Dropbox
+            else:
+                # primo run vero: il file non esiste ancora su Dropbox
                 df_all = df_eval.copy()
 
             # =====================================================
