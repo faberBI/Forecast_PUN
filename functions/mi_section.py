@@ -1,22 +1,29 @@
 # ============================================================
-# mi_section.py — Sezione MI da richiamare dentro app.py (PUN)
+# mi_section.py — Sezione MI (su GOOGLE DRIVE) dentro app.py (PUN)
 # ============================================================
-# NON è una pagina a sé: espone render_mi() che disegna l'intera sezione MI.
-# PUN e MI restano SEMPRE entrambi visibili (nessun selettore): in app.py
-# aggiungi l'import in cima e la chiamata come ULTIMA riga del file:
+# La parte MI usa Google Drive (Dropbox pieno). Il PUN resta su Dropbox.
+# Espone render_mi(): PUN e MI restano SEMPRE entrambi. In app.py:
 #
 #     from mi_section import render_mi          # in cima, con gli altri import
 #     ...   (tutto il codice PUN, invariato)   ...
 #     st.divider()
-#     render_mi()                               # in fondo: la sezione MI segue il PUN
+#     render_mi()                               # in fondo
 #
-# Richiede alla radice del progetto: mi_direct_forecast.py, train_mi_direct.py,
-# functions/ (gli stessi helper del PUN) e il secret st.secrets["DROPBOX_TOKEN"].
+# Richiede alla radice: gdrive_io.py, mi_direct_forecast.py, train_mi_direct.py
+# Dipendenze extra: google-api-python-client, google-auth
+#
+# AUTENTICAZIONE (service account):
+#   - metti il JSON del service account nei secrets Streamlit come tabella
+#     [gcp_service_account] (type, project_id, private_key, client_email, ...)
+#   - CONDIVIDI la cartella "PUN Forecast" con l'email del service account
+#     (client_email), permesso Editor.
 #
 # ⚠️ ASSUNZIONI (in cima, facili da cambiare):
-#   - Dropbox: /forecast_mi/<zona>/... e /forecast_mi/models_mi/<zona>/
+#   - Root Drive MI: PUN Forecast/forecast_pun/forecast_mi
+#       dati    -> <root>/<zona>/dataset.parquet
+#       modelli -> <root>/models_mi/<zona>/<file>
 #   - Excel: colonna Datetime + colonna prezzo della zona (nome = ZONE_TARGET),
-#     tollera Excel 'largo' (tutte le zone) o con un'unica colonna numerica.
+#     tollera Excel 'largo' o con un'unica colonna numerica.
 # ============================================================
 
 import os
@@ -29,12 +36,9 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
-import dropbox
 
-# helper Dropbox condivisi con il PUN
-from functions.create_datasets import load_from_dropbox, upload_to_dropbox
+import gdrive_io as gdrive
 
-# motore di inference MI + nomi file artefatti
 from mi_direct_forecast import (
     load_direct_artifacts,
     forecast_next_96,
@@ -47,7 +51,7 @@ from train_mi_direct import MODEL_QUANTILES_NAME, METADATA_NAME
 # ============================================================
 # CONFIG / ASSUNZIONI
 # ============================================================
-DROPBOX_ROOT = "/forecast_mi"
+GDRIVE_ROOT = "PUN Forecast/forecast_pun/forecast_mi"
 
 ZONE_TARGET = {
     "italia_senza_vincoli": "Italia (senza vincoli)",
@@ -63,52 +67,47 @@ ZONE_TARGET = {
 
 
 def zone_paths(zone_key: str) -> dict:
-    base = f"{DROPBOX_ROOT}/{zone_key}"
+    base = f"{GDRIVE_ROOT}/{zone_key}"
     return {
         "dataset": f"{base}/dataset.parquet",
-        "model_dir": f"{DROPBOX_ROOT}/models_mi/{zone_key}",
+        "model_dir": f"{GDRIVE_ROOT}/models_mi/{zone_key}",
         "forecast_history": f"{base}/forecast_history.parquet",
         "error_history": f"{base}/error_history.parquet",
     }
 
 
 # ============================================================
-# DROPBOX HELPERS
+# GOOGLE DRIVE — client (cache) + helper
 # ============================================================
-def make_dbx_client() -> dropbox.Dropbox:
-    token = st.secrets.get("DROPBOX_TOKEN", os.getenv("DROPBOX_TOKEN", ""))
-    if not token:
-        raise RuntimeError("DROPBOX_TOKEN mancante (st.secrets o env).")
-    return dropbox.Dropbox(oauth2_access_token=token)
+@st.cache_resource(show_spinner=False)
+def get_drive():
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError(
+            "Credenziali Google mancanti: aggiungi [gcp_service_account] nei secrets."
+        )
+    return gdrive.get_service_from_info(dict(st.secrets["gcp_service_account"]))
 
 
-def _dropbox_path_exists(path: str) -> bool:
-    """True se esiste, False se NON esiste; su altri errori RILANCIA (non azzerare storici)."""
-    try:
-        make_dbx_client().files_get_metadata(path)
-        return True
-    except dropbox.exceptions.ApiError as e:
-        if (isinstance(e.error, dropbox.files.GetMetadataError)
-                and e.error.is_path() and e.error.get_path().is_not_found()):
-            return False
-        raise
+def drive_exists(path: str) -> bool:
+    return gdrive.path_exists(get_drive(), path)
 
 
-def _download_file(dbx, dropbox_path: str, local_path: Path):
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    _, res = dbx.files_download(dropbox_path)
-    with open(local_path, "wb") as f:
-        f.write(res.content)
+def drive_read_parquet(path: str) -> pd.DataFrame:
+    return gdrive.read_parquet(get_drive(), path)
+
+
+def drive_upload(local_path, drive_path: str):
+    return gdrive.upload_file(get_drive(), str(local_path), drive_path, overwrite=True)
 
 
 @st.cache_resource(show_spinner=False)
 def load_zone_model(zone_key: str):
-    """Scarica gli artefatti della zona da Dropbox e li carica. Cache per zona."""
+    """Scarica gli artefatti della zona da Drive e li carica. Cache per zona."""
     paths = zone_paths(zone_key)
     local_dir = Path("models_mi_local") / zone_key
-    dbx = make_dbx_client()
+    svc = get_drive()
     for name in (MODEL_QUANTILES_NAME, METADATA_NAME):
-        _download_file(dbx, f"{paths['model_dir']}/{name}", local_dir / name)
+        gdrive.download_file(svc, f"{paths['model_dir']}/{name}", str(local_dir / name))
     return load_direct_artifacts(str(local_dir))
 
 
@@ -164,9 +163,9 @@ def parse_zone_excel(uploaded_file, target_col: str) -> pd.DataFrame:
 
 def _load_dataset(zone_key: str):
     paths = zone_paths(zone_key)
-    if not _dropbox_path_exists(paths["dataset"]):
+    if not drive_exists(paths["dataset"]):
         return None
-    df = load_from_dropbox(paths["dataset"], st.secrets["DROPBOX_TOKEN"]).copy()
+    df = drive_read_parquet(paths["dataset"]).copy()
     if not isinstance(df.index, pd.DatetimeIndex):
         if "Datetime" in df.columns:
             df["Datetime"] = pd.to_datetime(df["Datetime"])
@@ -178,7 +177,7 @@ def _load_dataset(zone_key: str):
 # RENDER — l'intera sezione MI
 # ============================================================
 def render_mi():
-    st.sidebar.header("⚡ Zona MI")
+    st.sidebar.header("⚡ Zona MI (Google Drive)")
     zone_key = st.sidebar.selectbox(
         "Seleziona la zona",
         options=list(ZONE_TARGET.keys()),
@@ -188,7 +187,7 @@ def render_mi():
     paths = zone_paths(zone_key)
 
     st.title(f"📈 MI — {target_col}")
-    st.caption(f"Modello direct 96 v3 (quantile grid + CQR asimmetrico) — zona **{target_col}**")
+    st.caption(f"Modello direct 96 v3 (quantile grid + CQR asimmetrico) — zona **{target_col}** · storage: Google Drive")
 
     # ------------------------------------------------------------
     # 1) DATI INPUT — aggiorna / sovrascrivi
@@ -205,7 +204,7 @@ def render_mi():
                 st.metric("📅 Ultima data dataset", str(df_dataset.index.max()))
                 st.metric("Righe", f"{len(df_dataset):,}".replace(",", "."))
             else:
-                st.info("Nessun dataset ancora su Dropbox per questa zona.")
+                st.info("Nessun dataset ancora su Drive per questa zona.")
     except Exception as e:
         with col_a:
             st.warning(f"⚠️ Impossibile leggere il dataset: {e}")
@@ -213,7 +212,7 @@ def render_mi():
     with col_b:
         st.info(
             "Carica un Excel/parquet con i nuovi prezzi della zona: verranno uniti "
-            "allo storico su Dropbox (dedup per timestamp) e il dataset verrà sovrascritto."
+            "allo storico su Google Drive (dedup per timestamp) e il dataset verrà sovrascritto."
         )
 
     up_data = st.file_uploader(
@@ -252,9 +251,9 @@ def render_mi():
             local = Path("mi_tmp"); local.mkdir(exist_ok=True)
             local_path = local / f"dataset_{zone_key}.parquet"
             merged.to_parquet(local_path)
-            upload_to_dropbox(str(local_path), paths["dataset"], st.secrets["DROPBOX_TOKEN"])
+            drive_upload(local_path, paths["dataset"])
 
-            st.success(f"✅ Dataset «{target_col}» aggiornato e sovrascritto su Dropbox "
+            st.success(f"✅ Dataset «{target_col}» aggiornato e sovrascritto su Drive "
                        f"({len(merged)} righe, fino a {merged.index.max()})")
             st.cache_data.clear()
         except Exception as e:
@@ -267,7 +266,7 @@ def render_mi():
     st.divider()
     st.header("2 · Modello e forecast")
 
-    if st.sidebar.button("🔁 Ricarica modello MI da Dropbox"):
+    if st.sidebar.button("🔁 Ricarica modello MI da Drive"):
         load_zone_model.clear()
 
     if "mi_fc" not in st.session_state:
@@ -277,7 +276,7 @@ def render_mi():
         artifacts = load_zone_model(zone_key)
         model_meta = artifacts["metadata"]
         models_q = artifacts["models_q"]
-        st.success(f"✅ Modello «{target_col}» caricato da Dropbox")
+        st.success(f"✅ Modello «{target_col}» caricato da Google Drive")
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Steps", model_meta.get("steps", 96))
@@ -291,7 +290,7 @@ def render_mi():
                        " · ".join(f"q{k}={float(v):.3f}" for k, v in list(op.items())[:7]))
     except Exception as e:
         st.error(f"❌ Modello non disponibile per «{target_col}»: {e}")
-        st.info("Alleni la zona e carichi gli artefatti su Dropbox in "
+        st.info("Alleni la zona e carichi gli artefatti su Drive in "
                 f"`{paths['model_dir']}/` (i file {MODEL_QUANTILES_NAME} e {METADATA_NAME}).")
         return
 
@@ -308,9 +307,9 @@ def render_mi():
 
             fc_save = fc.copy()
             fc_save["created_at"] = pd.Timestamp.now()
-            if _dropbox_path_exists(paths["forecast_history"]):
+            if drive_exists(paths["forecast_history"]):
                 try:
-                    old = load_from_dropbox(paths["forecast_history"], st.secrets["DROPBOX_TOKEN"])
+                    old = drive_read_parquet(paths["forecast_history"])
                     allfc = pd.concat([old, fc_save], ignore_index=True)
                 except Exception:
                     st.error("Impossibile leggere il forecast history: non sovrascrivo.")
@@ -322,7 +321,7 @@ def render_mi():
             local = Path("mi_tmp"); local.mkdir(exist_ok=True)
             p = local / f"forecast_{zone_key}.parquet"
             allfc.to_parquet(p)
-            upload_to_dropbox(str(p), paths["forecast_history"], st.secrets["DROPBOX_TOKEN"])
+            drive_upload(p, paths["forecast_history"])
             st.success(f"✅ Forecast salvato ({len(fc)} punti; storico {len(allfc)})")
         except Exception as e:
             st.error(f"❌ Errore forecast: {e}")
@@ -408,10 +407,10 @@ def render_mi():
             st.success("✅ File prezzi reali caricato")
             st.dataframe(df_real.head(), use_container_width=True)
 
-            if not _dropbox_path_exists(paths["forecast_history"]):
-                st.warning("⚠️ Nessun forecast history su Dropbox per questa zona.")
+            if not drive_exists(paths["forecast_history"]):
+                st.warning("⚠️ Nessun forecast history su Drive per questa zona.")
                 return
-            df_fc = load_from_dropbox(paths["forecast_history"], st.secrets["DROPBOX_TOKEN"]).copy()
+            df_fc = drive_read_parquet(paths["forecast_history"]).copy()
             df_fc["Datetime"] = pd.to_datetime(df_fc["Datetime"])
             st.info(f"Forecast in archivio: {len(df_fc)} righe")
 
@@ -427,9 +426,9 @@ def render_mi():
                 df_eval["abs_error"] = df_eval["error"].abs()
                 df_eval["created_at"] = run_ts
 
-                if _dropbox_path_exists(paths["error_history"]):
+                if drive_exists(paths["error_history"]):
                     try:
-                        old = load_from_dropbox(paths["error_history"], st.secrets["DROPBOX_TOKEN"])
+                        old = drive_read_parquet(paths["error_history"])
                     except Exception:
                         st.error("Impossibile leggere lo storico errori: interrompo per non sovrascriverlo.")
                         return
@@ -443,7 +442,7 @@ def render_mi():
                 local = Path("mi_tmp"); local.mkdir(exist_ok=True)
                 p = local / f"error_{zone_key}.parquet"
                 df_all.to_parquet(p)
-                upload_to_dropbox(str(p), paths["error_history"], st.secrets["DROPBOX_TOKEN"])
+                drive_upload(p, paths["error_history"])
                 st.success("✅ Error history aggiornato")
 
                 df_all["mae_rolling"] = df_all["abs_error"].rolling(96).mean()
