@@ -306,8 +306,36 @@ def render_mi():
             if df_dataset is None or df_dataset.empty:
                 st.warning("⚠️ Nessun dataset per questa zona: carica prima i dati input (sezione 1).")
                 return
+            model_dir = str(Path("models_mi_local") / zone_key)
+            fke = model_meta.get("future_known_exog", [])
+
+            # --- esogene FUTURE del giorno-target (meteo previsto + solare _B16 + carico) ---
+            # GUARD DI COERENZA: si iniettano SOLO se TUTTE quelle attese dal modello
+            # sono presenti. Se ne manca una (es. carico Terna in rate-limit), NON si
+            # inietta nulla e si torna alla persistenza: un'iniezione parziale peggiora.
+            future_exog = None
+            if fke:
+                try:
+                    _origin = df_dataset[df_dataset[target_col].notna()].index.max()
+                    _start = pd.Timestamp(_origin).floor("D")
+                    _end = _start + pd.Timedelta(days=2)
+                    with st.spinner("Scarico le esogene previste del giorno-target..."):
+                        fexo = mi_update.build_future_exogenous(_start, _end, dict(st.secrets))
+                    missing = [c for c in fke if c not in fexo.columns or fexo[c].isna().all()]
+                    if missing:
+                        st.warning(
+                            "⚠️ Esogene future incomplete (mancano: "
+                            + ", ".join(missing[:6]) + (" …" if len(missing) > 6 else "")
+                            + "). Forecast SENZA iniezione (persistenza), per non peggiorare la stima."
+                        )
+                    else:
+                        future_exog = fexo
+                        st.caption("✅ Esogene future complete: iniettate al tempo-target.")
+                except Exception as e:
+                    st.warning(f"⚠️ Esogene future non disponibili ({e}). Forecast con persistenza.")
+
             with st.spinner("Calcolo forecast..."):
-                fc = forecast_next_96(df_dataset, model_dir=str(Path("models_mi_local") / zone_key))
+                fc = forecast_next_96(df_dataset, model_dir=model_dir, future_exog=future_exog)
             st.session_state["mi_fc"][zone_key] = fc
 
             fc_save = fc.copy()
