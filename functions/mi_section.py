@@ -82,11 +82,7 @@ def zone_paths(zone_key: str) -> dict:
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def get_drive():
-    if "gcp_service_account" not in st.secrets:
-        raise RuntimeError(
-            "Credenziali Google mancanti: aggiungi [gcp_service_account] nei secrets."
-        )
-    return gdrive.get_service_from_info(dict(st.secrets["gcp_service_account"]))
+    return gdrive.get_service_from_secrets(st.secrets)
 
 
 def drive_exists(path: str) -> bool:
