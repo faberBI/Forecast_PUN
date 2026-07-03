@@ -47,9 +47,10 @@ ZONE_TARGET = {
     "italia_coupling":      "Italia Coupling",
 }
 
-# Excel di input: STESSO file GME del PUN (ha già tutte le colonne zona).
-# Committalo nel repo in dati_input/ e l'app lo legge da qui.
-MI_INPUT_PATH = "dati_input/Add_on_PUN.xlsx"
+# Excel di input MI: export MI (infragiornaliero) — SEPARATO da Add_on_PUN.xlsx
+# (il PUN è day-ahead; qui la y sono i prezzi MI). Stessa struttura GME
+# (Data/Ora/Periodo + colonne zona). Committalo nel repo in dati_input/.
+MI_INPUT_PATH = "dati_input/Add_on_MI.xlsx"
 
 # città meteo — IDENTICHE al PUN (lista di dict, come vuole download_multi_city)
 LOCATIONS = [
@@ -199,41 +200,70 @@ def download_exogenous(start_dt: pd.Timestamp, end_dt: pd.Timestamp,
 # ============================================================
 # FEATURE AUTOREGRESSIVE "LEGACY" (schema dei modelli attuali)
 # ============================================================
+def _it_holiday_flags(index):
+    try:
+        import holidays
+        it = holidays.IT()
+        dates = pd.DatetimeIndex(index.date)
+        is_hol = pd.Series(dates, index=index).isin(it).to_numpy()
+        is_tom = pd.Series(dates + pd.Timedelta(days=1), index=index).isin(it).to_numpy()
+        is_yst = pd.Series(dates - pd.Timedelta(days=1), index=index).isin(it).to_numpy()
+        wd = index.dayofweek
+        bridge = ((wd == 0) & is_tom) | ((wd == 4) & is_yst)
+    except ImportError:
+        n = len(index); is_hol = np.zeros(n, bool); bridge = np.zeros(n, bool)
+    return {"is_holiday": is_hol.astype(int), "is_bridge_day": np.asarray(bridge).astype(int)}
+
+
 def compute_legacy_autoregressive(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
-    """Calcola le colonne autoregressive con le formule CONFERMATE dai vecchi parquet.
-    mi_ret_* e ret_* -> NaN (vedi caveat). Mantiene le altre colonne."""
+    """Calcola calendario (DERIVA DALLA DATA) + autoregressive (DERIVA DAL TARGET)
+    con le formule confermate. mi_ret_* e ret_* -> NaN (caveat). Mantiene le esogene."""
     df = df.copy()
     y = df[target_col]
     s = y.shift(1)
     idx = df.index
 
-    # calendario minimo usato dai modelli
+    # ---- CALENDARIO (tutte le feature "DERIVA DALLA DATA") ----
+    df["hour"] = idx.hour
+    df["minute"] = idx.minute
     df["Minute"] = idx.minute
-    df["doy_sin"] = np.sin(2 * np.pi * idx.dayofyear / 365)
-    df["doy_cos"] = np.cos(2 * np.pi * idx.dayofyear / 365)
+    df["quarter"] = idx.minute // 15
+    df["quarter_of_day"] = df["hour"] * 4 + df["quarter"]
+    df["day_of_week"] = idx.dayofweek
+    df["day_of_year"] = idx.dayofyear
+    df["week_of_year"] = idx.isocalendar().week.astype(int).to_numpy()
+    df["month"] = idx.month
+    df["year"] = idx.year
+    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["dow_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
+    df["doy_sin"] = np.sin(2 * np.pi * df["day_of_year"] / 365)
+    df["doy_cos"] = np.cos(2 * np.pi * df["day_of_year"] / 365)
+    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+    hol = _it_holiday_flags(idx)
+    df["is_holiday"] = hol["is_holiday"]
+    df["is_bridge_day"] = hol["is_bridge_day"]
 
-    # lag
+    # ---- AUTOREGRESSIVE (DERIVA DAL TARGET) ----
     df["lag_1d"] = y.shift(96)
     df["lag_2d"] = y.shift(192)
     df["lag_7d"] = y.shift(672)
-
-    # rolling (su shift(1))
     df["rolling_mean_4h"] = s.rolling(16, min_periods=4).mean()
     df["rolling_mean_24h"] = s.rolling(96, min_periods=24).mean()
     df["rolling_std_24h"] = s.rolling(96, min_periods=24).std()
     df["rolling_std_7d"] = s.rolling(672, min_periods=96).std()
     df["rolling_max_24h"] = s.rolling(96, min_periods=24).max()
     df["rolling_min_24h"] = s.rolling(96, min_periods=24).min()
-
-    # momentum
     df["momentum_4h"] = y.shift(1) - y.shift(16)
     df["momentum_1d"] = y.shift(1) - y.shift(96)
 
-    # regime (quantile GLOBALE 0.80 come lo storico)
     thr = df["rolling_std_24h"].quantile(0.80)
     df["high_vol_regime"] = (df["rolling_std_24h"] > thr).astype(int)
 
-    # colonne non ricostruibili / morte -> NaN
+    # non ricostruibili / morte -> NaN (l'imputer del modello le riempie)
     for c in ["mi_ret_1h", "mi_ret_1d", "mi_ret_7d", "ret_1h", "ret_1d", "ret_7d"]:
         df[c] = np.nan
 
