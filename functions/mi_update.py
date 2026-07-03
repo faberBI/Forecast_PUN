@@ -149,9 +149,14 @@ def download_exogenous(start_dt: pd.Timestamp, end_dt: pd.Timestamp,
     indicizzato Datetime con: commodities+derivate, meteo (per città + medie),
     market_load_MW, prezzi zonali _B16 (+ lag).
     """
-    from functions.create_datasets import (
-        PUNFeatureEngineering, MeteoDownloader, TernaClient, EntsoeDownloader
-    )
+    try:
+        from functions.create_datasets import (
+            PUNFeatureEngineering, MeteoDownloader, TernaClient, EntsoeDownloader
+        )
+    except ModuleNotFoundError:
+        from create_datasets import (
+            PUNFeatureEngineering, MeteoDownloader, TernaClient, EntsoeDownloader
+        )
 
     s_meteo = start_dt.strftime("%Y-%m-%d"); e_meteo = end_dt.strftime("%Y-%m-%d")
     s_terna = start_dt.strftime("%d/%m/%Y"); e_terna = end_dt.strftime("%d/%m/%Y")
@@ -293,7 +298,10 @@ def compute_legacy_autoregressive(df: pd.DataFrame, target_col: str) -> pd.DataF
 def update_zone(zone_key: str, y_new: pd.DataFrame, exog: pd.DataFrame,
                 secrets: dict) -> tuple:
     """Aggiorna il dataset.parquet della zona su Drive. Ritorna (df_final, ks_df)."""
-    from functions.create_datasets import ks_drift
+    try:
+        from functions.create_datasets import ks_drift
+    except ModuleNotFoundError:
+        from create_datasets import ks_drift
 
     svc = gdrive.get_service_from_secrets(secrets)
     path = zone_paths(zone_key)["dataset"]
@@ -390,3 +398,86 @@ def update_all_zones(excel_file, secrets: dict, only_zones=None, log=print) -> d
             log(f"❌ {zk}: {e}")
 
     return results
+
+
+# ============================================================
+# METEO FUTURO (per il forecast del giorno successivo)
+# ============================================================
+def build_future_meteo(start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
+    """Scarica il METEO PREVISTO (endpoint forecast di Open-Meteo, nessun token)
+    per la finestra [start_dt, end_dt] e lo porta a 15 min con le medie aggregate.
+    Serve a fornire al forecast le esogene meteo del giorno da prevedere,
+    invece della persistenza. Ritorna un df indicizzato Datetime."""
+    try:
+        from functions.create_datasets import MeteoDownloader
+    except ModuleNotFoundError:
+        from create_datasets import MeteoDownloader
+
+    meteo = MeteoDownloader()
+    mdf = meteo.download_multi_city(
+        LOCATIONS, start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+    )
+    mdf["Datetime"] = pd.to_datetime(mdf["Datetime"]).dt.floor("h")
+    mdf = mdf.groupby("Datetime").mean(numeric_only=True)
+
+    def _mean(sub):
+        cols = [c for c in mdf.columns if sub in c and "mean" not in c]
+        return mdf[cols].mean(axis=1) if cols else np.nan
+
+    mdf["temperature_mean"] = _mean("temperature_2m")
+    mdf["cloud_cover_mean"] = _mean("cloud_cover")
+    mdf["wind_speed_mean"] = _mean("wind_speed_80m")
+    prec = [c for c in mdf.columns if "precipitation" in c and "mean" not in c]
+    if prec:
+        mdf["precipitation_mean"] = mdf[prec].mean(axis=1)
+
+    return mdf.sort_index().resample(FREQ).ffill()
+
+
+# ============================================================
+# ESOGENE FUTURE COMPLETE (meteo previsto + solare _B16 + carico previsto)
+# ============================================================
+def build_future_exogenous(start_dt: pd.Timestamp, end_dt: pd.Timestamp, secrets: dict) -> pd.DataFrame:
+    """Esogene NOTE nel futuro del giorno da prevedere, da iniettare nel forecast:
+      - meteo previsto (Open-Meteo forecast, no token)
+      - solare day-ahead per zona _B16 (ENTSOE A69/B16, noto in anticipo)
+      - carico previsto (Terna get_forecast_load) -> iniettato come market_load_MW
+    Ritorna un df indicizzato Datetime a 15 min. Richiede ENTSOE_TOKEN e TERNA_*."""
+    try:
+        from functions.create_datasets import TernaClient, EntsoeDownloader
+    except ModuleNotFoundError:
+        from create_datasets import TernaClient, EntsoeDownloader
+
+    # 1) meteo previsto
+    exo = build_future_meteo(start_dt, end_dt)
+
+    # 2) solare day-ahead _B16 (ENTSOE)
+    ent_token = secrets.get("ENTSOE_TOKEN", os.getenv("ENTSOE_TOKEN", ""))
+    if ent_token:
+        try:
+            entsoe = EntsoeDownloader(
+                token=ent_token, zones=ZONES_ENTSOE,
+                start_date=start_dt.to_pydatetime(), end_date=end_dt.to_pydatetime(),
+            )
+            ent = entsoe.build_features()
+            exo = exo.join(ent, how="outer")
+        except Exception as e:
+            print(f"[future_exog] ENTSOE non disponibile: {e}")
+
+    # 3) carico previsto (Terna) -> market_load_MW
+    tid = secrets.get("TERNA_CLIENT_ID", os.getenv("TERNA_CLIENT_ID", ""))
+    tsec = secrets.get("TERNA_CLIENT_SECRET", os.getenv("TERNA_CLIENT_SECRET", ""))
+    if tid and tsec:
+        try:
+            terna = TernaClient(client_id=tid, client_secret=tsec)
+            fl = terna.get_forecast_load(start_dt.strftime("%d/%m/%Y"), end_dt.strftime("%d/%m/%Y"))
+            if fl is not None and not fl.empty and "forecast_total_load_MW" in fl.columns:
+                fl["Datetime"] = pd.to_datetime(fl["date"])
+                fl = (fl.set_index("Datetime").sort_index()[["forecast_total_load_MW"]]
+                        .rename(columns={"forecast_total_load_MW": "market_load_MW"})
+                        .resample(FREQ).ffill())
+                exo = exo.join(fl, how="outer")
+        except Exception as e:
+            print(f"[future_exog] Terna forecast non disponibile: {e}")
+
+    return exo.sort_index().resample(FREQ).ffill()
