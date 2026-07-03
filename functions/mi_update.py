@@ -84,7 +84,7 @@ def zone_paths(zone_key: str) -> dict:
 # ============================================================
 def parse_zone_excel(uploaded_file, target_col: str) -> pd.DataFrame:
     raw = pd.read_excel(uploaded_file)
-    raw.columns = [str(c).strip() for c in raw.columns]
+    raw.columns = [" ".join(str(c).split()) for c in raw.columns]   # collassa spazi doppi/interni
 
     if "Data" in raw.columns and "Periodo" in raw.columns:
         data = pd.to_datetime(raw["Data"], dayfirst=True, errors="coerce")
@@ -98,11 +98,12 @@ def parse_zone_excel(uploaded_file, target_col: str) -> pd.DataFrame:
     raw = raw.dropna(subset=[dt_col]).sort_values(dt_col).set_index(dt_col)
     raw.index.name = "Datetime"
 
-    if target_col in raw.columns:
-        price_col = target_col
+    tgt = " ".join(str(target_col).split())
+    if tgt in raw.columns:
+        price_col = tgt
     else:
-        norm = {str(c).strip().lower(): c for c in raw.columns}
-        price_col = norm.get(str(target_col).strip().lower())
+        norm = {c.lower(): c for c in raw.columns}
+        price_col = norm.get(tgt.lower())
     if price_col is None:
         raise ValueError(f"Colonna '{target_col}' non trovata. Colonne: {list(raw.columns)}")
 
