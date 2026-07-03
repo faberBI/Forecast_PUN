@@ -279,8 +279,7 @@ def update_zone(zone_key: str, y_new: pd.DataFrame, exog: pd.DataFrame,
     """Aggiorna il dataset.parquet della zona su Drive. Ritorna (df_final, ks_df)."""
     from functions.create_datasets import ks_drift
 
-    svc = gdrive.get_service_from_info(secrets["gcp_service_account"]) \
-        if isinstance(secrets.get("gcp_service_account"), dict) else gdrive.get_service_from_info(dict(secrets["gcp_service_account"]))
+    svc = gdrive.get_service_from_secrets(secrets)
     path = zone_paths(zone_key)["dataset"]
     target_col = ZONE_TARGET[zone_key]
 
@@ -345,7 +344,7 @@ def update_all_zones(excel_file, secrets: dict, only_zones=None, log=print) -> d
 
     # una zona qualsiasi per leggere l'ultima data e fissare la finestra di lookback
     ref_zone = (only_zones or list(ZONE_TARGET.keys()))[0]
-    svc = gdrive.get_service_from_info(dict(secrets["gcp_service_account"]))
+    svc = gdrive.get_service_from_secrets(secrets)
     df_ref = gdrive.read_parquet(svc, zone_paths(ref_zone)["dataset"])
     if not isinstance(df_ref.index, pd.DatetimeIndex):
         df_ref["Datetime"] = pd.to_datetime(df_ref["Datetime"]); df_ref = df_ref.set_index("Datetime")
