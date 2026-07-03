@@ -38,6 +38,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 import gdrive_io as gdrive
+import mi_update
 
 from mi_direct_forecast import (
     load_direct_artifacts,
@@ -216,74 +217,51 @@ def render_mi():
     st.caption(f"Modello direct 96 v3 (quantile grid + CQR asimmetrico) — zona **{target_col}** · storage: Google Drive")
 
     # ------------------------------------------------------------
-    # 1) DATI INPUT — aggiorna / sovrascrivi
+    # 1) DATI INPUT — un Excel GME aggiorna TUTTE le zone (append)
     # ------------------------------------------------------------
     st.divider()
     st.header("1 · Dati input")
 
-    col_a, col_b = st.columns(2)
+    # stato del dataset della zona selezionata
     df_dataset = None
     try:
         df_dataset = _load_dataset(zone_key)
-        with col_a:
-            if df_dataset is not None and not df_dataset.empty:
-                st.metric("📅 Ultima data dataset", str(df_dataset.index.max()))
-                st.metric("Righe", f"{len(df_dataset):,}".replace(",", "."))
-            else:
-                st.info("Nessun dataset ancora su Drive per questa zona.")
+        if df_dataset is not None and not df_dataset.empty:
+            c1, c2 = st.columns(2)
+            c1.metric(f"📅 Ultima data ({target_col})", str(df_dataset.index.max()))
+            c2.metric("Righe", f"{len(df_dataset):,}".replace(",", "."))
+        else:
+            st.info(f"Nessun dataset su Drive per «{target_col}».")
     except Exception as e:
-        with col_a:
-            st.warning(f"⚠️ Impossibile leggere il dataset: {e}")
+        st.warning(f"⚠️ Impossibile leggere il dataset «{target_col}»: {e}")
 
-    with col_b:
-        st.info(
-            "Carica un Excel/parquet con i nuovi prezzi della zona: verranno uniti "
-            "allo storico su Google Drive (dedup per timestamp) e il dataset verrà sovrascritto."
-        )
-
-    up_data = st.file_uploader(
-        f"📥 Nuovi dati per «{target_col}» (Excel o parquet)",
-        type=["xlsx", "parquet"], key="mi_data_upload",
+    st.info(
+        "Carica l'**Excel GME** (Data/Ora/Periodo + colonne zona). Le esogene "
+        "(commodities, meteo, carico, prezzi zonali) vengono scaricate **una volta** "
+        "e i dataset di **tutte le 9 zone** su Drive vengono aggiornati in append."
     )
 
-    if up_data is not None and st.button("🔄 Aggiorna e sovrascrivi dataset", use_container_width=True):
+    up_gme = st.file_uploader("📥 Excel GME (tutte le zone)", type=["xlsx"], key="mi_gme_upload")
+    only_this = st.checkbox(f"Solo «{target_col}» (per un test rapido)", value=False, key="mi_only_this")
+
+    if up_gme is not None and st.button("🔄 Aggiorna i dataset MI su Drive", use_container_width=True):
         try:
-            if up_data.name.lower().endswith(".parquet"):
-                new_df = pd.read_parquet(up_data)
-                if not isinstance(new_df.index, pd.DatetimeIndex):
-                    dt_col = _find_datetime_col(new_df)
-                    new_df[dt_col] = pd.to_datetime(new_df[dt_col], errors="coerce")
-                    new_df = new_df.dropna(subset=[dt_col]).set_index(dt_col)
-                    new_df.index.name = "Datetime"
-                if target_col not in new_df.columns:
-                    raise ValueError(f"Il parquet non contiene la colonna '{target_col}'.")
-                new_df = new_df[[target_col]].copy()
-                new_df[target_col] = pd.to_numeric(new_df[target_col], errors="coerce")
-                new_df = new_df[~new_df.index.duplicated(keep="last")]
-            else:
-                new_df = parse_zone_excel(up_data, target_col)
-
-            st.success(f"✅ Letti {len(new_df)} nuovi record")
-            st.dataframe(new_df.tail(10), use_container_width=True)
-
-            if df_dataset is not None and not df_dataset.empty:
-                merged = pd.concat([df_dataset, new_df], axis=0)
-                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-            else:
-                merged = new_df.sort_index()
-
-            merged = merged.asfreq("15min")
-
-            local = Path("mi_tmp"); local.mkdir(exist_ok=True)
-            local_path = local / f"dataset_{zone_key}.parquet"
-            merged.to_parquet(local_path)
-            drive_upload(local_path, paths["dataset"])
-
-            st.success(f"✅ Dataset «{target_col}» aggiornato e sovrascritto su Drive "
-                       f"({len(merged)} righe, fino a {merged.index.max()})")
+            only = [zone_key] if only_this else None
+            with st.spinner("Scarico le esogene e aggiorno le zone (può richiedere qualche minuto)..."):
+                res = mi_update.update_all_zones(up_gme, dict(st.secrets), only_zones=only, log=st.write)
+            for zk, r in res.items():
+                if "error" in r:
+                    st.error(f"❌ {zk}: {r['error']}")
+                else:
+                    st.success(f"✅ {zk}: +{r['rows_added']} righe (fino a {r['last']})")
+                    ks = r.get("ks")
+                    if ks is not None and not ks.empty:
+                        with st.expander(f"📊 KS drift — {zk}"):
+                            st.dataframe(ks, use_container_width=True)
             st.cache_data.clear()
+            load_zone_model.clear()
         except Exception as e:
-            st.error(f"❌ Errore aggiornamento dati: {e}")
+            st.error(f"❌ Errore aggiornamento: {e}")
             st.code(traceback.format_exc(), language="python")
 
     # ------------------------------------------------------------
