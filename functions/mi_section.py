@@ -127,36 +127,62 @@ def _find_datetime_col(df: pd.DataFrame):
     return None
 
 
+def _to_num_italian(s: pd.Series) -> pd.Series:
+    """Converte numeri con decimale a virgola (formato italiano). '128,37' -> 128.37.
+    Se la serie è già numerica la lascia com'è. Tollera il separatore migliaia '.'."""
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce")
+    s = s.astype(str).str.strip()
+    has_comma = s.str.contains(",", na=False)
+    conv = s.where(~has_comma, s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
+    return pd.to_numeric(conv, errors="coerce")
+
+
 def parse_zone_excel(uploaded_file, target_col: str) -> pd.DataFrame:
-    """Excel -> df indicizzato Datetime con la sola colonna prezzo della zona (rinominata target_col)."""
+    """
+    Legge un Excel e restituisce un df indicizzato per Datetime con la sola
+    colonna prezzo della zona (rinominata `target_col`).
+
+    Gestisce due formati:
+      - GME/MI: colonne Data (gg/mm/aaaa) + Periodo (1..96, quarto d'ora del
+        giorno) + una colonna per zona, con decimali a VIRGOLA. Il Datetime è
+        costruito come Data + (Periodo-1)*15min.
+      - generico: una colonna Datetime/Data già completa.
+    """
     raw = pd.read_excel(uploaded_file)
+    raw.columns = [str(c).strip() for c in raw.columns]
 
-    dt_col = _find_datetime_col(raw)
-    if dt_col is None:
-        raise ValueError(f"Nessuna colonna data/ora riconosciuta. Colonne: {list(raw.columns)}")
+    # --- costruzione Datetime ---
+    if "Data" in raw.columns and "Periodo" in raw.columns:
+        data = pd.to_datetime(raw["Data"], dayfirst=True, errors="coerce")
+        periodo = pd.to_numeric(raw["Periodo"], errors="coerce")
+        raw = raw.assign(Datetime=data + pd.to_timedelta((periodo - 1) * 15, unit="m"))
+        dt_col = "Datetime"
+    else:
+        dt_col = _find_datetime_col(raw)
+        if dt_col is None:
+            raise ValueError(f"Nessuna colonna data/ora riconosciuta. Colonne: {list(raw.columns)}")
+        raw[dt_col] = pd.to_datetime(raw[dt_col], dayfirst=True, errors="coerce")
 
-    raw[dt_col] = pd.to_datetime(raw[dt_col], errors="coerce")
     raw = raw.dropna(subset=[dt_col]).sort_values(dt_col).set_index(dt_col)
     raw.index.name = "Datetime"
 
+    # --- trova la colonna prezzo della zona ---
     if target_col in raw.columns:
         price_col = target_col
     else:
         norm = {str(c).strip().lower(): c for c in raw.columns}
         price_col = norm.get(str(target_col).strip().lower())
-
     if price_col is None:
-        num_cols = [c for c in raw.columns if pd.api.types.is_numeric_dtype(raw[c])]
-        if len(num_cols) == 1:
-            price_col = num_cols[0]
-        else:
-            raise ValueError(
-                f"Colonna prezzo per '{target_col}' non trovata. Colonne disponibili: {list(raw.columns)}"
-            )
+        raise ValueError(
+            f"Colonna prezzo per '{target_col}' non trovata. Colonne disponibili: {list(raw.columns)}"
+        )
 
+    # --- valore (decimali con virgola) ---
     out = raw[[price_col]].copy()
     out.columns = [target_col]
-    out[target_col] = pd.to_numeric(out[target_col], errors="coerce")
+    out[target_col] = _to_num_italian(out[target_col])
+    out = out[out[target_col].notna()]
     out = out[~out.index.duplicated(keep="last")]
     return out
 
