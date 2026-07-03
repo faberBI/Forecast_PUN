@@ -1,19 +1,19 @@
 # ============================================================
 # MI DIRECT 96 - INFERENCE (serving)
 # ============================================================
-# Analogo di pun_direct_forecast.py, ma per i modelli MI v3 (per zona).
-# Carica gli artefatti salvati da train_mi_direct e produce il forecast
-# next-96 con punto (quantile configurabile) e banda CQR ASIMMETRICA.
-#
+# Carica gli artefatti di UNA zona (models_mi/<zona>/) e produce il forecast
+# next-96 con punto (quantile configurabile) e banda CQR asimmetrica.
 # Riusa add_price_features / add_time_features da train_mi_direct
-# => STESSE feature del training, nessun train/serve skew.
+# => STESSE feature del training (nessun train/serve skew sulle feature base).
 #
-# Output di forecast_next_96 (colonne GENERICHE, zona-agnostiche):
-#   Datetime, origin_time, horizon, hour,
-#   q<liv> per ogni quantile (monotoni, crossing corretto),
-#   pred   = quantile "punto" (da metadata point_quantile),
-#   lower/upper = banda calibrata principale (coppia piu' ampia),
-#   band_coverage
+# Novità di questa versione:
+#   - lower_floor: la banda inferiore non scende sotto un minimo (default 0),
+#     SENZA censurare il punto (se il punto è negativo, lower segue il punto).
+#   - esogene "note nel futuro" (FUTURE_KNOWN_EXOG): a serving il valore futuro
+#     non è nello storico -> invece di NaN si usa la PERSISTENZA (ultimo valore
+#     noto all'origine). Meglio della mediana dell'imputer.
+#   - diagnose_forecast_inputs(): strumento per capire se una previsione "sballa"
+#     (feature NaN all'origine, colonne mancanti, ecc.).
 # ============================================================
 
 import os
@@ -36,19 +36,15 @@ from train_mi_direct import (
 # LOAD ARTIFACTS
 # ============================================================
 def load_direct_artifacts(model_dir: str) -> Dict:
-    """Carica {models_q, metadata} per UNA zona dalla cartella models_mi/<zona>/."""
     model_path = os.path.join(model_dir, MODEL_QUANTILES_NAME)
     meta_path = os.path.join(model_dir, METADATA_NAME)
-
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Modello non trovato: {model_path}")
     if not os.path.exists(meta_path):
         raise FileNotFoundError(f"Metadata non trovato: {meta_path}")
-
     models_q = joblib.load(model_path)
     with open(meta_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
-
     return {"models_q": models_q, "metadata": metadata}
 
 
@@ -56,8 +52,8 @@ def load_direct_artifacts(model_dir: str) -> Dict:
 # COSTRUZIONE RIGA DI PREVISIONE (una origine, un orizzonte)
 # ============================================================
 def _build_pred_row(df_feat: pd.DataFrame, origin_ts: pd.Timestamp, horizon: int,
-                    base_cols: List[str], future_known_exog: List[str]):
-    row = df_feat.loc[[origin_ts], base_cols].copy()
+                    base_cols: List[str], future_known_exog: List[str], last_known: dict):
+    row = df_feat.reindex(columns=base_cols).loc[[origin_ts]].copy()
     tgt = origin_ts + pd.Timedelta(FREQ) * horizon
 
     fut = add_time_features_from_index(pd.DatetimeIndex([tgt]), prefix="future_")
@@ -65,7 +61,10 @@ def _build_pred_row(df_feat: pd.DataFrame, origin_ts: pd.Timestamp, horizon: int
     row = row.join(fut)
 
     for c in [c for c in future_known_exog if c in df_feat.columns]:
-        row[f"future_{c}"] = df_feat[c].get(tgt, np.nan)
+        val = df_feat[c].get(tgt, np.nan)
+        if pd.isna(val):
+            val = last_known.get(c, np.nan)   # persistenza: ultimo valore noto
+        row[f"future_{c}"] = val
 
     return row, tgt
 
@@ -79,10 +78,12 @@ def _widest_pair(conformal_pairs: List) -> tuple:
 # FORECAST NEXT 96
 # ============================================================
 def forecast_next_96(df: pd.DataFrame, model_dir: str,
-                     output_dir: Optional[str] = None, save_csv: bool = False) -> pd.DataFrame:
+                     output_dir: Optional[str] = None, save_csv: bool = False,
+                     lower_floor: Optional[float] = 0.0) -> pd.DataFrame:
     """
     Previsione dei prossimi 96 quarti d'ora per la zona del modello in model_dir.
     `df` = storico della zona (deve contenere la colonna target del modello).
+    lower_floor: minimo per la banda inferiore (default 0.0; None per disattivare).
     """
     art = load_direct_artifacts(model_dir)
     models_q = art["models_q"]
@@ -114,12 +115,15 @@ def forecast_next_96(df: pd.DataFrame, model_dir: str,
         raise ValueError(f"Nessun valore valido nel target '{target_col}'.")
     origin_ts = valid.index.max()
 
+    # persistenza per le esogene note nel futuro (ultimo valore all'origine)
+    last_known = {c: df_feat[c].loc[origin_ts] for c in future_known_exog if c in df_feat.columns}
+
     q_str = [str(q) for q in quantile_levels]
     q_cols = [f"q{q}" for q in quantile_levels]
 
     rows = []
     for h in range(1, STEPS + 1):
-        row, tgt = _build_pred_row(df_feat, origin_ts, h, base_cols, future_known_exog)
+        row, tgt = _build_pred_row(df_feat, origin_ts, h, base_cols, future_known_exog, last_known)
         cols = selected[str(h)]
         X_h = row.reindex(columns=cols)
 
@@ -139,7 +143,6 @@ def forecast_next_96(df: pd.DataFrame, model_dir: str,
     # --- punto = quantile configurato ---
     point_col = f"q{point_q}"
     if point_col not in out.columns:
-        # fallback al piu' vicino
         nearest = min(quantile_levels, key=lambda q: abs(q - point_q))
         point_col = f"q{nearest}"
     out["pred"] = out[point_col]
@@ -153,7 +156,11 @@ def forecast_next_96(df: pd.DataFrame, model_dir: str,
     out["upper"] = out[high_col] + out["hour"].map(lambda hr: off[str(int(hr))]["high"])
     out["band_coverage"] = float(q_high - q_low)
 
-    # coerenza finale: lower <= pred <= upper
+    # --- vincolo di dominio: la banda inferiore non scende sotto lower_floor ---
+    if lower_floor is not None:
+        out["lower"] = out["lower"].clip(lower=lower_floor)
+
+    # coerenza finale: lower <= pred <= upper (se il punto è < floor, lower segue il punto)
     out["lower"] = np.minimum(out["lower"], out["pred"])
     out["upper"] = np.maximum(out["upper"], out["pred"])
 
@@ -168,12 +175,57 @@ def forecast_next_96(df: pd.DataFrame, model_dir: str,
 
 
 # ============================================================
+# DIAGNOSI: perché una previsione "sballa"?
+# ============================================================
+def diagnose_forecast_inputs(df: pd.DataFrame, model_dir: str) -> dict:
+    """Controlla lo stato delle feature ALL'ORIGINE (l'input che genera tutta la
+    previsione). Se molte sono NaN o mancanti, il modello imputa -> forecast sballato.
+    Ritorna un dizionario con: origine, n. feature NaN, quali, colonne mancanti dal df."""
+    art = load_direct_artifacts(model_dir)
+    meta = art["metadata"]
+    target_col = meta["target_col"]
+    base_cols = meta["base_feature_cols"]
+    future_known_exog = meta.get("future_known_exog", [])
+
+    df = ensure_datetime_index(df)
+    df = infer_and_fix_freq(df, FREQ)
+    df = safe_numeric_df(df)
+    df_feat = add_price_features(df, target_col)
+
+    valid = df_feat[df_feat[target_col].notna()]
+    if valid.empty:
+        return {"error": f"nessun valore valido nel target '{target_col}'"}
+    origin_ts = valid.index.max()
+
+    missing = [c for c in base_cols if c not in df_feat.columns]
+    orow = df_feat.reindex(columns=base_cols).loc[origin_ts]
+    nan_feats = orow[orow.isna()].index.tolist()
+
+    return {
+        "origin_ts": str(origin_ts),
+        "target_at_origin": float(df_feat[target_col].loc[origin_ts]),
+        "n_base_features": len(base_cols),
+        "n_missing_from_df": len(missing),
+        "missing_from_df": missing[:50],
+        "n_nan_at_origin": len(nan_feats),
+        "nan_features_at_origin": nan_feats[:50],
+        "future_known_exog": future_known_exog,
+        "hint": (
+            "Se n_nan_at_origin o n_missing_from_df sono alti (es. decine di "
+            "esogene), è quello il motivo: l'origine ha feature mancanti/NaN e il "
+            "modello imputa. Controlla che l'aggiornamento (mi_update) riempia le "
+            "esogene (LOCATIONS/ZONES/credenziali) e che lo schema del dataset "
+            "coincida con base_feature_cols."
+        ),
+    }
+
+
+# ============================================================
 # IMPORTANZA FEATURE (gain nativo LightGBM, modelli del punto)
 # ============================================================
 def build_native_importance_df(models_q: Dict, metadata: Dict) -> pd.DataFrame:
     point_q = str(metadata.get("point_quantile", 0.5))
     selected = metadata.get("selected_features_by_horizon", {})
-
     rows = []
     for h, qd in models_q.items():
         pipe = qd.get(point_q) or qd.get("0.5") or next(iter(qd.values()))
@@ -184,7 +236,6 @@ def build_native_importance_df(models_q: Dict, metadata: Dict) -> pd.DataFrame:
             continue
         for f, v in zip(feats, imp):
             rows.append({"horizon": int(h), "feature": f, "importance": float(v)})
-
     return pd.DataFrame(rows)
 
 
