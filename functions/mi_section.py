@@ -236,19 +236,24 @@ def render_mi():
         st.warning(f"⚠️ Impossibile leggere il dataset «{target_col}»: {e}")
 
     st.info(
-        "Carica l'**Excel GME** (Data/Ora/Periodo + colonne zona). Le esogene "
-        "(commodities, meteo, carico, prezzi zonali) vengono scaricate **una volta** "
-        "e i dataset di **tutte le 9 zone** su Drive vengono aggiornati in append."
+        f"Aggiorna il file **`{mi_update.MI_INPUT_PATH}`** nel repo (è lo **stesso Excel GME del PUN**, "
+        "ha già tutte le colonne zona). Al click: le esogene vengono scaricate **una volta** e i "
+        "dataset di **tutte le 9 zone** su Drive vengono aggiornati in append."
     )
 
-    up_gme = st.file_uploader("📥 Excel GME (tutte le zone)", type=["xlsx"], key="mi_gme_upload")
+    file_ok = os.path.exists(mi_update.MI_INPUT_PATH)
+    if file_ok:
+        st.caption(f"✅ File trovato: `{mi_update.MI_INPUT_PATH}`")
+    else:
+        st.warning(f"⚠️ File non trovato: `{mi_update.MI_INPUT_PATH}` — committalo in `dati_input/` (come per il PUN).")
+
     only_this = st.checkbox(f"Solo «{target_col}» (per un test rapido)", value=False, key="mi_only_this")
 
-    if up_gme is not None and st.button("🔄 Aggiorna i dataset MI su Drive", use_container_width=True):
+    if st.button("🔄 Aggiorna i dataset MI su Drive", use_container_width=True, disabled=not file_ok):
         try:
             only = [zone_key] if only_this else None
             with st.spinner("Scarico le esogene e aggiorno le zone (può richiedere qualche minuto)..."):
-                res = mi_update.update_all_zones(up_gme, dict(st.secrets), only_zones=only, log=st.write)
+                res = mi_update.update_all_zones(mi_update.MI_INPUT_PATH, dict(st.secrets), only_zones=only, log=st.write)
             for zk, r in res.items():
                 if "error" in r:
                     st.error(f"❌ {zk}: {r['error']}")
