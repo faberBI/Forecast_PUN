@@ -71,7 +71,23 @@ ZONES_ENTSOE = [
     ("CALA", "10Y1001C--00096J"),
 ]
 
-KS_COLS = ["ttf_price", "market_load_MW", "cloud_cover_mean", "NORD_B16"]  # colonne per il drift
+# --- KS drift: calcolato su TUTTE le esogene, mostra le prime N per entità di drift ---
+KS_TOP_N = 15
+_METEO_CITIES = ("milano", "torino", "roma", "bologna", "bari", "palermo")
+_METEO_MEANS = ("temperature_mean", "cloud_cover_mean", "wind_speed_mean", "precipitation_mean")
+_COMMODITY_SPREADS = ("gas_eua_ratio", "spark_spread_proxy", "ttf_vol_z", "gas_regime")
+
+
+def exogenous_cols(df) -> list:
+    """Colonne ESOGENE (commodities+derivate, meteo, carico, _B16) su cui ha
+    senso misurare il covariate drift. Esclude target, calendario e autoregressive."""
+    cols = []
+    for c in df.columns:
+        if ("_price" in c) or ("_B16" in c) or (c == "market_load_MW") \
+           or (c in _COMMODITY_SPREADS) or (c in _METEO_MEANS) \
+           or any(c.startswith(city + "_") for city in _METEO_CITIES):
+            cols.append(c)
+    return cols
 
 
 def zone_paths(zone_key: str) -> dict:
@@ -321,10 +337,12 @@ def update_zone(zone_key: str, y_new: pd.DataFrame, exog: pd.DataFrame,
     df_final.reset_index().rename(columns={"index": "Datetime"}).set_index("Datetime").to_parquet(lp)
     gdrive.upload_file(svc, lp, path, overwrite=True)
 
-    # KS drift (vecchio vs nuovo) su alcune colonne
-    ks_cols = [c for c in KS_COLS if c in df_hist.columns and c in df_final.columns]
+    # KS drift: su TUTTE le esogene, poi tieni le prime N per entità di drift.
+    # (ks_drift ordina già per ks_stat decrescente)
+    ks_cols = [c for c in exogenous_cols(df_hist) if c in df_final.columns]
     try:
-        ks_df = ks_drift(df_hist, df_final, ks_cols) if ks_cols else pd.DataFrame()
+        ks_full = ks_drift(df_hist, df_final, ks_cols) if ks_cols else pd.DataFrame()
+        ks_df = ks_full.head(KS_TOP_N) if not ks_full.empty else ks_full
     except Exception:
         ks_df = pd.DataFrame()
 
