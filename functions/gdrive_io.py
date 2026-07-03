@@ -45,6 +45,39 @@ def get_service_from_file(path: str):
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+def get_service_from_oauth(client_id: str, client_secret: str, refresh_token: str):
+    """Costruisce il client Drive con credenziali UTENTE (OAuth).
+    L'app agisce come l'utente: i file sono di sua proprietà (usa la sua quota),
+    quindi CREA e MODIFICA funzionano su Drive personale."""
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=SCOPES,
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def get_service_from_secrets(secrets):
+    """Sceglie l'auth dai secrets: preferisce OAuth utente (gcp_oauth),
+    altrimenti service account (gcp_service_account).
+    NB: su Drive personale il service account NON può creare file (no quota);
+    usa gcp_oauth."""
+    if "gcp_oauth" in secrets:
+        o = secrets["gcp_oauth"]
+        return get_service_from_oauth(o["client_id"], o["client_secret"], o["refresh_token"])
+    if "gcp_service_account" in secrets:
+        return get_service_from_info(dict(secrets["gcp_service_account"]))
+    raise RuntimeError(
+        "Credenziali Google mancanti: aggiungi [gcp_oauth] (consigliato) "
+        "oppure [gcp_service_account] nei secrets."
+    )
+
+
 # ------------------------------------------------------------
 # NAVIGAZIONE PATH -> ID
 # ------------------------------------------------------------
