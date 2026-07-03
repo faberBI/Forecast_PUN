@@ -79,11 +79,16 @@ def _widest_pair(conformal_pairs: List) -> tuple:
 # ============================================================
 def forecast_next_96(df: pd.DataFrame, model_dir: str,
                      output_dir: Optional[str] = None, save_csv: bool = False,
-                     lower_floor: Optional[float] = 0.0) -> pd.DataFrame:
+                     lower_floor: Optional[float] = 0.0,
+                     future_exog: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
     Previsione dei prossimi 96 quarti d'ora per la zona del modello in model_dir.
     `df` = storico della zona (deve contenere la colonna target del modello).
     lower_floor: minimo per la banda inferiore (default 0.0; None per disattivare).
+    future_exog: df (indicizzato Datetime) con le esogene NOTE nel futuro del
+        giorno da prevedere (es. meteo previsto). Le sue righe oltre l'origine
+        vengono iniettate, così il modello usa i valori reali del tempo-target
+        (non la persistenza) per le esogene in FUTURE_KNOWN_EXOG.
     """
     art = load_direct_artifacts(model_dir)
     models_q = art["models_q"]
@@ -107,6 +112,19 @@ def forecast_next_96(df: pd.DataFrame, model_dir: str,
     df = ensure_datetime_index(df)
     df = infer_and_fix_freq(df, FREQ)
     df = safe_numeric_df(df)
+
+    # inietta le esogene "note nel futuro" (es. meteo previsto) oltre l'origine,
+    # così il forecast usa i valori del tempo-target invece della persistenza
+    if future_exog is not None and not future_exog.empty:
+        _valid0 = df[df[target_col].notna()]
+        if not _valid0.empty:
+            _origin0 = _valid0.index.max()
+            fe = ensure_datetime_index(future_exog).sort_index()
+            add_cols = [c for c in fe.columns if c in df.columns]
+            fut_rows = fe.loc[fe.index > _origin0, add_cols]
+            if not fut_rows.empty:
+                df = pd.concat([df, fut_rows], axis=0)
+                df = df[~df.index.duplicated(keep="last")].sort_index()
 
     df_feat = add_price_features(df, target_col)
 
