@@ -412,7 +412,7 @@ def render_mi():
 
     if up_real is not None:
         try:
-            df_real = parse_zone_excel(up_real, target_col).rename(columns={target_col: "y"})
+            df_real = mi_update.parse_zone_excel(up_real, target_col).rename(columns={target_col: "y"})
             st.success("✅ File prezzi reali caricato")
             st.dataframe(df_real.head(), use_container_width=True)
 
