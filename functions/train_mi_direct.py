@@ -66,10 +66,13 @@ PINBALL_BY_HOUR_NAME = "mi_direct_eval_pinball_by_hour.csv"
 COVERAGE_BY_HOUR_NAME = "mi_direct_eval_coverage_by_hour.csv"
 
 FUTURE_KNOWN_EXOG = [
-    "forecast_total_load_MW",
-    "bologna_temperature_2m",
-    "bari_wind_speed_80m",
-    "cloud_cover_mean",
+    # solare day-ahead per zona (ENTSOE A69/B16) - noto in anticipo, driver del prezzo diurno
+    "CALA_B16", "CNOR_B16", "CSUD_B16", "NORD_B16", "SARD_B16", "SICI_B16", "SUD_B16",
+    # carico: in training = market_load_MW a t+h; al serving iniettiamo il forecast Terna
+    "market_load_MW",
+    # meteo previsto (Open-Meteo forecast)
+    "temperature_mean", "cloud_cover_mean", "wind_speed_mean",
+    "bologna_temperature_2m", "bari_wind_speed_80m",
 ]
 
 
