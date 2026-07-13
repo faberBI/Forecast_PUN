@@ -1,0 +1,74 @@
+# ============================================================
+# .github/workflows/retrain.yml
+# Retraining automatico dei modelli PUN e MI ogni 3 giorni (da lunedì).
+# Chiama gli Space HF (pubblici) via gradio_client, passando un token segreto.
+# ============================================================
+name: Retrain models
+
+on:
+  schedule:
+    # gira OGNI GIORNO alle 01:00 UTC; poi un gate tiene solo 1 giorno su 3.
+    # (cron non sa fare "ogni 3 giorni da lunedì": lo facciamo col gate sotto)
+    - cron: "0 1 * * *"
+  workflow_dispatch: {}   # permette anche il lancio manuale dal tab Actions
+
+jobs:
+  # 1) GATE: procedi solo se sono passati multipli di 3 giorni da un lunedì-ancora
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        run: |
+          ANCHOR="2026-07-13"   # un lunedì di riferimento
+          TODAY=$(date -u +%Y-%m-%d)
+          DIFF=$(( ( $(date -u -d "$TODAY" +%s) - $(date -u -d "$ANCHOR" +%s) ) / 86400 ))
+          echo "Giorni dall'ancora ($ANCHOR): $DIFF"
+          if [ $(( DIFF % 3 )) -eq 0 ]; then
+            echo "run=true"  >> "$GITHUB_OUTPUT"
+            echo "=> oggi si riallena"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "=> oggi si salta"
+          fi
+
+  # 2) RETRAIN: chiama i due Space
+  retrain:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # il training MI è lungo; alza/abbassa se serve
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installa gradio_client
+        run: pip install --quiet gradio_client
+
+      - name: Retrain PUN
+        env:
+          TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from gradio_client import Client
+          # <-- METTI qui "utente/nome-space" del tuo Space PUN
+          client = Client("TUO_UTENTE/pun-retrain-space")
+          res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
+          print("PUN:", res[:2000] if isinstance(res, str) else res)
+          PY
+
+      - name: Retrain MI
+        env:
+          TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from gradio_client import Client
+          # <-- METTI qui "utente/nome-space" del tuo Space MI
+          client = Client("TUO_UTENTE/mi-retrain-space")
+          res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
+          print("MI:", res[:2000] if isinstance(res, str) else res)
+          PY
