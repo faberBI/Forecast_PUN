@@ -14,7 +14,7 @@ on:
 
 jobs:
   # 1) GATE: procedi solo se sono passati multipli di 3 giorni da un lunedì-ancora
-  gate:
+  gate:client 
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.check.outputs.run }}
@@ -55,7 +55,7 @@ jobs:
           import os
           from gradio_client import Client
           # <-- METTI qui "utente/nome-space" del tuo Space PUN
-          client = Client("TUO_UTENTE/pun-retrain-space")
+          client = Client("cyclistBI91/forecast_pun_new")
           res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
           print("PUN:", res[:2000] if isinstance(res, str) else res)
           PY
@@ -68,7 +68,7 @@ jobs:
           import os
           from gradio_client import Client
           # <-- METTI qui "utente/nome-space" del tuo Space MI
-          client = Client("TUO_UTENTE/mi-retrain-space")
+          client = Client("cyclistBI91/forecast_pun_mi")
           res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
           print("MI:", res[:2000] if isinstance(res, str) else res)
           PY
