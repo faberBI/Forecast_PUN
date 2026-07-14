@@ -1,74 +1,58 @@
 # ============================================================
-# .github/workflows/retrain.yml
-# Retraining automatico dei modelli PUN e MI ogni 3 giorni (da lunedì).
-# Chiama gli Space HF (pubblici) via gradio_client, passando un token segreto.
+# .github/workflows/retrain-pun.yml
+# Metti questo file in .github/workflows/ del repo GitHub.
 # ============================================================
-name: Retrain models
+name: retrain-pun
 
 on:
   schedule:
-    # gira OGNI GIORNO alle 01:00 UTC; poi un gate tiene solo 1 giorno su 3.
-    # (cron non sa fare "ogni 3 giorni da lunedì": lo facciamo col gate sotto)
-    - cron: "0 1 * * *"
-  workflow_dispatch: {}   # permette anche il lancio manuale dal tab Actions
+    - cron: "0 3 * * 0"        # ogni domenica 03:00 UTC (~04:00/05:00 in Italia)
+  workflow_dispatch:            # bottone "Run workflow" per lanciarlo a mano
+
+concurrency:                    # niente run sovrapposti
+  group: retrain-pun
+  cancel-in-progress: false
 
 jobs:
-  # 1) GATE: procedi solo se sono passati multipli di 3 giorni da un lunedì-ancora
-  gate:client 
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.check.outputs.run }}
-    steps:
-      - id: check
-        run: |
-          ANCHOR="2026-07-13"   # un lunedì di riferimento
-          TODAY=$(date -u +%Y-%m-%d)
-          DIFF=$(( ( $(date -u -d "$TODAY" +%s) - $(date -u -d "$ANCHOR" +%s) ) / 86400 ))
-          echo "Giorni dall'ancora ($ANCHOR): $DIFF"
-          if [ $(( DIFF % 3 )) -eq 0 ]; then
-            echo "run=true"  >> "$GITHUB_OUTPUT"
-            echo "=> oggi si riallena"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "=> oggi si salta"
-          fi
-
-  # 2) RETRAIN: chiama i due Space
   retrain:
-    needs: gate
-    if: needs.gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # il training MI è lungo; alza/abbassa se serve
+    timeout-minutes: 300        # taglia il job se supera 5h (limite hard runner = 6h)
     steps:
+      - uses: actions/checkout@v4
+        # --- Se il codice sta SOLO nello Space HF (non su GitHub), togli lo step
+        #     sopra e usa questo per clonare il repo dello Space (HF_TOKEN se privato):
+        # - name: Clona lo Space HF
+        #   run: git clone https://user:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/<owner>/<space>.git .
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
-      - name: Installa gradio_client
-        run: pip install --quiet gradio_client
+      - name: Installa dipendenze
+        # Consiglio: un requirements-train.txt SENZA gradio (job più veloce).
+        run: pip install -r requirements.txt
 
-      - name: Retrain PUN
+      - name: Retrain
+        run: python retrain_headless.py
         env:
-          TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os
-          from gradio_client import Client
-          # <-- METTI qui "utente/nome-space" del tuo Space PUN
-          client = Client("cyclistBI91/forecast_pun_new")
-          res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
-          print("PUN:", res[:2000] if isinstance(res, str) else res)
-          PY
+          # ⚠️ RISPECCHIA QUI ESATTAMENTE gli env var che dropbox_io.get_dbx() legge.
+          # Caso A — token singolo (ATTENZIONE alla durata, vedi note):
+          DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
+          # Caso B — refresh-token flow (CONSIGLIATO: non scade). Scommenta e togli sopra:
+          # DROPBOX_APP_KEY:       ${{ secrets.DROPBOX_APP_KEY }}
+          # DROPBOX_APP_SECRET:    ${{ secrets.DROPBOX_APP_SECRET }}
+          # DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
 
-      - name: Retrain MI
-        env:
-          TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os
-          from gradio_client import Client
-          # <-- METTI qui "utente/nome-space" del tuo Space MI
-          client = Client("cyclistBI91/forecast_pun_mi")
-          res = client.predict(os.environ["TRIGGER_TOKEN"], api_name="/retrain_all")
-          print("MI:", res[:2000] if isinstance(res, str) else res)
-          PY
+          MAX_PINBALL_REGRESSION: "0.25"
+          MAX_DATASET_AGE_HOURS: "96"   # rifiuta il training se il dataset è più vecchio di 4 giorni
+          PROMOTE: "1"
+
+          # Notifica opzionale (lascia vuoto se non la usi):
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # (opzionale) salva i log come artifact anche se il job fallisce
+      - name: Salva log
+        if: always()
+        run: echo "vedi lo step Retrain per il log completo"
